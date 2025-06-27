@@ -90,7 +90,7 @@ def prepare_map_data(df_filtrado, municipios_df):
             'presupuestosgrinversion': 'sum',
             'recursosaprobadosasignadosspgr': 'sum',
             'SALDO_PENDIENTE': 'sum',
-            'numeroproyectosaprobados': 'sum',
+            'numeroproyectosaprobados': lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum(),
             'nombrefondo': lambda x: ', '.join(x.unique())  # Concatenar fondos únicos
         }).reset_index()
         
@@ -126,7 +126,7 @@ def prepare_map_data(df_filtrado, municipios_df):
                 f"📍 {row['NOM_DPTO']}\n" +
                 f"💰 Presupuesto: ${row['presupuestosgrinversion']:,.0f}\n" +
                 f"🏦 Fondo: {row['nombrefondo']}\n" +
-                f"📊 Proyectos: {int(pd.to_numeric(row['numeroproyectosaprobados'], errors='coerce'))}", axis=1
+                f"📊 Proyectos: {int(row['numeroproyectosaprobados']) if pd.notna(row['numeroproyectosaprobados']) else 0}", axis=1
             )
         
         return map_data
@@ -144,7 +144,7 @@ def prepare_choropleth_data(df_filtrado):
             'presupuestosgrinversion': 'sum',
             'recursosaprobadosasignadosspgr': 'sum',
             'SALDO_PENDIENTE': 'sum',
-            'numeroproyectosaprobados': 'sum',
+            'numeroproyectosaprobados': lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum(),
             'nombrefondo': lambda x: ', '.join(x.unique())
         }).reset_index()
         
@@ -167,9 +167,9 @@ def prepare_choropleth_data(df_filtrado):
         st.warning(f"Error al preparar datos coropléticos: {str(e)}")
         return pd.DataFrame()
 
-# Función para crear mapa combinado (departamentos + municipios)
-def create_combined_choropleth_map(df_filtrado, geojson_data, municipios_geo):
-    """Crea un mapa que combina departamentos coropléticos y círculos de municipios"""
+# Función para crear mapa coroplético de departamentos
+def create_choropleth_map(df_filtrado, geojson_data):
+    """Crea un mapa coroplético solo de departamentos"""
     if not geojson_data:
         return None
         
@@ -177,148 +177,97 @@ def create_combined_choropleth_map(df_filtrado, geojson_data, municipios_geo):
         # Preparar datos por departamento
         dept_data = prepare_choropleth_data(df_filtrado)
         
-        # Preparar datos de municipios
-        muni_data = prepare_map_data(df_filtrado, municipios_geo) if not municipios_geo.empty else pd.DataFrame()
-        
-        if dept_data.empty and muni_data.empty:
+        if dept_data.empty:
             return None
         
-        layers = []
+        # Normalizar presupuesto para colores (0-255)
+        min_budget = dept_data['presupuestosgrinversion'].min()
+        max_budget = dept_data['presupuestosgrinversion'].max()
         
-        # Layer 1: Departamentos coropléticos (fondo)
-        if not dept_data.empty:
-            # Normalizar presupuesto departamental para colores
-            min_budget = dept_data['presupuestosgrinversion'].min()
-            max_budget = dept_data['presupuestosgrinversion'].max()
-            
-            if max_budget > min_budget:
-                dept_data['color_intensity'] = ((dept_data['presupuestosgrinversion'] - min_budget) / 
-                                             (max_budget - min_budget) * 255).astype(int)
-            else:
-                dept_data['color_intensity'] = 128
-            
-            # Crear diccionario de colores por departamento
-            color_dict = {}
-            tooltip_dict = {}
-            
-            for _, row in dept_data.iterrows():
-                dept_name = row['dept_normalized']
-                intensity = row['color_intensity']
-                
-                # Color RGB suave para departamentos (más transparente)
-                color_dict[dept_name] = [intensity//2 + 100, 150, 255 - intensity//2, 120]  # Más transparente
-                
-                # Tooltip departamental
-                tooltip_dict[dept_name] = (
-                    f"🏛️ DEPARTAMENTO: {row['nombredepartamento']}\n"
-                    f"💰 Presupuesto Dept: ${row['presupuestosgrinversion']:,.0f}\n"
-                    f"🏦 Fondos: {row['nombrefondo']}\n"
-                    f"📊 Proyectos Dept: {int(pd.to_numeric(row['numeroproyectosaprobados'], errors='coerce'))}"
-                )
-            
-            # Agregar propiedades al GeoJSON
-            for feature in geojson_data['features']:
-                dept_name = feature['properties'].get('NOMBRE_DPT', '').upper().strip()
-                
-                if dept_name in color_dict:
-                    feature['properties']['fill_color'] = color_dict[dept_name]
-                    feature['properties']['tooltip'] = tooltip_dict[dept_name]
-                else:
-                    feature['properties']['fill_color'] = [240, 240, 240, 80]  # Gris muy claro
-                    feature['properties']['tooltip'] = f"🏛️ {dept_name}\n❌ Sin datos disponibles"
-            
-            # Layer de departamentos
-            choropleth_layer = pdk.Layer(
-                'GeoJsonLayer',
-                data=geojson_data,
-                get_fill_color='properties.fill_color',
-                get_line_color=[100, 100, 100, 150],  # Bordes grises suaves
-                get_line_width=1,
-                pickable=True,
-                auto_highlight=True,
-                opacity=0.6
-            )
-            layers.append(choropleth_layer)
+        if max_budget > min_budget:
+            dept_data['color_intensity'] = ((dept_data['presupuestosgrinversion'] - min_budget) / 
+                                         (max_budget - min_budget) * 255).astype(int)
+        else:
+            dept_data['color_intensity'] = 128
         
-        # Layer 2: Municipios como círculos (encima)
-        if not muni_data.empty:
-            # Normalizar presupuesto municipal para colores más intensos
-            min_muni_budget = muni_data['presupuestosgrinversion'].min()
-            max_muni_budget = muni_data['presupuestosgrinversion'].max()
+        # Crear diccionario de colores por departamento
+        color_dict = {}
+        tooltip_dict = {}
+        
+        for _, row in dept_data.iterrows():
+            dept_name = row['dept_normalized']
+            intensity = row['color_intensity']
             
-            if max_muni_budget > min_muni_budget:
-                muni_data['color_intensity'] = ((muni_data['presupuestosgrinversion'] - min_muni_budget) / 
-                                              (max_muni_budget - min_muni_budget) * 255).astype(int)
+            # Color RGB (gradiente azul a rojo)
+            color_dict[dept_name] = [intensity, 50, 255 - intensity, 200]
+            
+            # Tooltip departamental
+            proyectos_dept = int(row['numeroproyectosaprobados']) if pd.notna(row['numeroproyectosaprobados']) else 0
+            tooltip_dict[dept_name] = (
+                f"🏛️ DEPARTAMENTO: {row['nombredepartamento']}\n"
+                f"💰 Presupuesto: ${row['presupuestosgrinversion']:,.0f}\n"
+                f"🏦 Fondos: {row['nombrefondo']}\n"
+                f"📊 Proyectos: {proyectos_dept:,}\n"
+                f"💸 Recursos Aprobados: ${row['recursosaprobadosasignadosspgr']:,.0f}"
+            )
+        
+        # Agregar propiedades de color y tooltip al GeoJSON
+        for feature in geojson_data['features']:
+            dept_name = feature['properties'].get('NOMBRE_DPT', '').upper().strip()
+            
+            # Asignar color
+            if dept_name in color_dict:
+                feature['properties']['fill_color'] = color_dict[dept_name]
+                feature['properties']['tooltip'] = tooltip_dict[dept_name]
             else:
-                muni_data['color_intensity'] = 128
-            
-            # Colores más intensos para municipios
-            muni_data['color_r'] = muni_data['color_intensity']
-            muni_data['color_g'] = 80
-            muni_data['color_b'] = 255 - muni_data['color_intensity']
-            muni_data['color_a'] = 200  # Más opaco que departamentos
-            
-            # Tooltip municipal más detallado
-            muni_data['tooltip_muni'] = muni_data.apply(lambda row: 
-                f"🏘️ MUNICIPIO: {row['NOM_MPIO']}\n" +
-                f"📍 Departamento: {row['NOM_DPTO']}\n" +
-                f"💰 Presupuesto Mpio: ${row['presupuestosgrinversion']:,.0f}\n" +
-                f"🏦 Fondo: {row['nombrefondo']}\n" +
-                f"📊 Proyectos Mpio: {int(pd.to_numeric(row['numeroproyectosaprobados'], errors='coerce'))}\n" +
-                f"💸 Recursos: ${row['recursosaprobadosasignadosspgr']:,.0f}", axis=1
-            )
-            
-            # Layer de municipios (círculos)
-            municipios_layer = pdk.Layer(
-                'ScatterplotLayer',
-                data=muni_data,
-                get_position=['LONGITUD', 'LATITUD'],
-                get_color=['color_r', 'color_g', 'color_b', 'color_a'],
-                get_radius=6000,  # Radio fijo
-                radius_scale=1,
-                radius_min_pixels=6,
-                radius_max_pixels=25,
-                pickable=True,
-                auto_highlight=True,
-                stroked=True,
-                get_line_color=[255, 255, 255, 200],  # Borde blanco
-                get_line_width=1
-            )
-            layers.append(municipios_layer)
+                feature['properties']['fill_color'] = [200, 200, 200, 100]  # Gris para sin datos
+                feature['properties']['tooltip'] = f"🏛️ {dept_name}\n❌ Sin datos disponibles"
+        
+        # Crear layer coroplético
+        choropleth_layer = pdk.Layer(
+            'GeoJsonLayer',
+            data=geojson_data,
+            get_fill_color='properties.fill_color',
+            get_line_color=[80, 80, 80, 200],  # Bordes grises
+            get_line_width=2,
+            pickable=True,
+            auto_highlight=True,
+            opacity=0.8
+        )
         
         # Vista inicial centrada en Colombia
         view_state = pdk.ViewState(
             latitude=4.5709,
             longitude=-74.2973,
-            zoom=5.2,
+            zoom=5,
             pitch=0,
             bearing=0
         )
         
-        # Tooltip combinado
+        # Tooltip
         tooltip = {
-            "html": "<div style='background: white; color: black; padding: 12px; border-radius: 8px; border: 1px solid #ccc; box-shadow: 0 2px 10px rgba(0,0,0,0.1);'><b>{tooltip}</b><b>{tooltip_muni}</b></div>",
+            "html": "<div style='background: white; color: black; padding: 12px; border-radius: 8px; border: 1px solid #ccc; box-shadow: 0 2px 10px rgba(0,0,0,0.1);'><b>{tooltip}</b></div>",
             "style": {
                 "fontSize": "13px",
                 "fontFamily": "Arial, sans-serif",
                 "whiteSpace": "pre-line",
-                "maxWidth": "320px"
+                "maxWidth": "300px"
             }
         }
         
-        # Crear deck con fondo blanco
+        # Crear deck
         deck = pdk.Deck(
-            layers=layers,
+            layers=[choropleth_layer],
             initial_view_state=view_state,
             tooltip=tooltip,
-            map_style='mapbox://styles/mapbox/light-v11'  # Fondo blanco/claro
+            map_style='mapbox://styles/mapbox/light-v11'
         )
         
-        return deck, dept_data, muni_data
+        return deck, dept_data
         
     except Exception as e:
-        st.error(f"Error al crear mapa combinado: {str(e)}")
-        return None, pd.DataFrame(), pd.DataFrame()
+        st.error(f"Error al crear mapa coroplético: {str(e)}")
+        return None, pd.DataFrame()
 
 # Función para crear el mapa con pydeck
 def create_pydeck_map(map_data):
@@ -508,93 +457,70 @@ if not df.empty:
             # Selector de tipo de mapa
             map_type = st.radio(
                 "Selecciona el tipo de visualización:",
-                ["🗺️ Mapa Combinado (Departamentos + Municipios)", "📍 Mapa de Puntos (Solo Municipios)"],
+                ["🗺️ Mapa Coroplético (Solo Departamentos)", "📍 Mapa de Puntos (Solo Municipios)"],
                 horizontal=True
             )
             
-            if map_type == "🗺️ Mapa Combinado (Departamentos + Municipios)":
-                # Mapa combinado: departamentos coropléticos + círculos municipales
-                if colombia_geojson and not municipios_geo.empty:
-                    combined_result = create_combined_choropleth_map(df_filtrado, colombia_geojson, municipios_geo)
+            if map_type == "🗺️ Mapa Coroplético (Solo Departamentos)":
+                # Mapa coroplético solo de departamentos
+                if colombia_geojson:
+                    choropleth_result = create_choropleth_map(df_filtrado, colombia_geojson)
                     
-                    if combined_result and combined_result[0]:
-                        deck_map, dept_data, muni_data = combined_result
+                    if choropleth_result and choropleth_result[0]:
+                        deck_map, dept_data = choropleth_result
                         
-                        st.subheader("🗺️ Mapa Combinado: Departamentos y Municipios")
+                        st.subheader("🗺️ Mapa Coroplético por Departamentos")
                         
-                        # Métricas combinadas
-                        col1, col2, col3, col4 = st.columns(4)
+                        # Métricas del mapa
+                        col1, col2, col3 = st.columns(3)
                         with col1:
-                            st.metric("Departamentos", len(dept_data) if not dept_data.empty else 0)
+                            st.metric("Departamentos con Datos", len(dept_data))
                         with col2:
-                            st.metric("Municipios", len(muni_data) if not muni_data.empty else 0)
+                            total_dept_budget = dept_data['presupuestosgrinversion'].sum()
+                            st.metric("Presupuesto Total", f"${total_dept_budget:,.0f}")
                         with col3:
-                            total_budget = (dept_data['presupuestosgrinversion'].sum() if not dept_data.empty else 0)
-                            st.metric("Presupuesto Total", f"${total_budget:,.0f}")
-                        with col4:
-                            total_projects = (pd.to_numeric(dept_data['numeroproyectosaprobados'], errors='coerce').fillna(0).sum() if not dept_data.empty else 0)
-                            st.metric("Proyectos Total", f"{int(total_projects):,}")
+                            avg_dept_budget = dept_data['presupuestosgrinversion'].mean()
+                            st.metric("Presupuesto Promedio", f"${avg_dept_budget:,.0f}")
                         
                         # Mostrar mapa
                         st.pydeck_chart(deck_map)
                         
-                        # Leyenda mejorada
+                        # Leyenda y controles
                         col1, col2 = st.columns([2, 1])
                         with col2:
                             st.markdown("**🎨 Leyenda del Mapa:**")
-                            st.markdown("**Departamentos (Fondo):**")
-                            st.markdown("🟦 **Azul claro**: Menor presupuesto")
-                            st.markdown("🟥 **Rojo claro**: Mayor presupuesto")
-                            st.markdown("**Municipios (Círculos):**")
-                            st.markdown("🔵 **Azul intenso**: Menor presupuesto")
-                            st.markdown("🔴 **Rojo intenso**: Mayor presupuesto")
-                            st.markdown("💡 **Tip**: Haz clic en departamentos o municipios")
+                            st.markdown("🔴 **Rojo**: Mayor presupuesto")
+                            st.markdown("🔵 **Azul**: Menor presupuesto")
+                            st.markdown("⚫ **Gris**: Sin datos")
+                            st.markdown("💡 **Tip**: Haz clic en los departamentos")
                         
-                        # Información en pestañas expandibles
-                        tab_dept, tab_muni = st.tabs(["🏛️ Top Departamentos", "🏘️ Top Municipios"])
-                        
-                        with tab_dept:
-                            if not dept_data.empty:
-                                st.write("**🏆 Top 5 Departamentos por Presupuesto:**")
-                                top_depts = dept_data.nlargest(5, 'presupuestosgrinversion')[
-                                    ['nombredepartamento', 'nombrefondo', 'presupuestosgrinversion', 'numeroproyectosaprobados']
-                                ].copy()
-                                top_depts['presupuestosgrinversion'] = top_depts['presupuestosgrinversion'].apply(lambda x: f"${x:,.0f}")
-                                top_depts['numeroproyectosaprobados'] = pd.to_numeric(top_depts['numeroproyectosaprobados'], errors='coerce').fillna(0).round().apply(lambda x: f"{int(x):,}")
-                                top_depts.columns = ['Departamento', 'Fondo(s)', 'Presupuesto', 'Proyectos']
-                                st.dataframe(top_depts, hide_index=True, use_container_width=True)
-                            else:
-                                st.info("No hay datos de departamentos disponibles")
-                        
-                        with tab_muni:
-                            if not muni_data.empty:
-                                st.write("**🏆 Top 5 Municipios por Presupuesto:**")
-                                top_municipios = muni_data.nlargest(5, 'presupuestosgrinversion')[
-                                    ['NOM_MPIO', 'NOM_DPTO', 'nombrefondo', 'presupuestosgrinversion', 'numeroproyectosaprobados']
-                                ].copy()
-                                top_municipios['presupuestosgrinversion'] = top_municipios['presupuestosgrinversion'].apply(lambda x: f"${x:,.0f}")
-                                top_municipios['numeroproyectosaprobados'] = pd.to_numeric(top_municipios['numeroproyectosaprobados'], errors='coerce').fillna(0).round().apply(lambda x: f"{int(x):,}")
-                                top_municipios.columns = ['Municipio', 'Departamento', 'Fondo(s)', 'Presupuesto', 'Proyectos']
-                                st.dataframe(top_municipios, hide_index=True, use_container_width=True)
-                            else:
-                                st.info("No hay datos de municipios disponibles")
+                        # Top 5 departamentos
+                        with st.expander("🏆 Top 5 Departamentos por Presupuesto"):
+                            top_depts = dept_data.nlargest(5, 'presupuestosgrinversion')[
+                                ['nombredepartamento', 'nombrefondo', 'presupuestosgrinversion', 'numeroproyectosaprobados']
+                            ].copy()
+                            top_depts['presupuestosgrinversion'] = top_depts['presupuestosgrinversion'].apply(lambda x: f"${x:,.0f}")
+                            top_depts['numeroproyectosaprobados'] = top_depts['numeroproyectosaprobados'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+                            top_depts.columns = ['Departamento', 'Fondo(s)', 'Presupuesto', 'Proyectos']
+                            st.dataframe(top_depts, hide_index=True, use_container_width=True)
                     
                     else:
-                        st.warning("⚠️ No se pudo crear el mapa combinado con los datos actuales.")
+                        st.warning("⚠️ No se pudo crear el mapa coroplético con los datos actuales.")
                         st.info("💡 Verifica que haya datos disponibles para los filtros seleccionados.")
                 
                 else:
-                    st.error("❌ No se pudieron cargar los datos geográficos necesarios.")
-                    st.info("🌐 Verificando conexión para cargar mapas base y archivo divipola.csv...")
+                    st.error("❌ No se pudo cargar el GeoJSON de Colombia.")
+                    st.info("🌐 Verificando conexión a internet para cargar el mapa base...")
             
             else:
-                # Mapa de puntos (código existente)
+                # Mapa de puntos (solo municipios)
                 if not municipios_geo.empty:
                     map_data = prepare_map_data(df_filtrado, municipios_geo)
                     
                     if not map_data.empty:
                         st.subheader("📍 Mapa de Puntos por Municipios")
                         
+                        # Métricas del mapa
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.metric("Municipios en el Mapa", len(map_data))
@@ -623,7 +549,7 @@ if not df.empty:
                                 ['NOM_MPIO', 'NOM_DPTO', 'nombrefondo', 'presupuestosgrinversion', 'numeroproyectosaprobados']
                             ].copy()
                             top_municipios['presupuestosgrinversion'] = top_municipios['presupuestosgrinversion'].apply(lambda x: f"${x:,.0f}")
-                            top_municipios['numeroproyectosaprobados'] = pd.to_numeric(top_municipios['numeroproyectosaprobados'], errors='coerce').fillna(0).round().apply(lambda x: f"{int(x):,}")
+                            top_municipios['numeroproyectosaprobados'] = top_municipios['numeroproyectosaprobados'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
                             top_municipios.columns = ['Municipio', 'Departamento', 'Fondo(s)', 'Presupuesto', 'Proyectos']
                             st.dataframe(top_municipios, hide_index=True, use_container_width=True)
                     
