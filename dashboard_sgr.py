@@ -6,6 +6,9 @@ import io
 from datetime import datetime
 import numpy as np
 import pydeck as pdk
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # Configuración de la página
 st.set_page_config(
@@ -327,6 +330,204 @@ def create_pydeck_map(map_data):
     
     return deck
 
+# Función para crear gráfico comparativo por fondo
+def create_fondo_comparison_chart(df_filtrado, fondos_interes):
+    """Crea un gráfico de barras comparativo por fondo"""
+    try:
+        # Preparar datos para el gráfico
+        chart_data = []
+        for fondo in fondos_interes:
+            datos_fondo = df_filtrado[df_filtrado['nombrefondo'] == fondo]
+            if len(datos_fondo) > 0:
+                chart_data.append({
+                    'Fondo': fondo.replace('ASIGNACION PARA LA INVERSION LOCAL', 'INVERSIÓN LOCAL'),
+                    'Presupuesto': datos_fondo['presupuestosgrinversion'].sum(),
+                    'Recursos Aprobados': datos_fondo['recursosaprobadosasignadosspgr'].sum(),
+                    'Saldo Pendiente': datos_fondo['SALDO_PENDIENTE'].sum()
+                })
+        
+        if not chart_data:
+            return None
+            
+        df_chart = pd.DataFrame(chart_data)
+        
+        # Crear gráfico de barras agrupadas
+        fig = go.Figure()
+        
+        fig.add_trace(go.Bar(
+            name='Presupuesto',
+            x=df_chart['Fondo'],
+            y=df_chart['Presupuesto'],
+            marker_color='lightblue',
+            text=df_chart['Presupuesto'].apply(lambda x: f'${x:,.0f}'),
+            textposition='auto',
+        ))
+        
+        fig.add_trace(go.Bar(
+            name='Recursos Aprobados',
+            x=df_chart['Fondo'],
+            y=df_chart['Recursos Aprobados'],
+            marker_color='darkgreen',
+            text=df_chart['Recursos Aprobados'].apply(lambda x: f'${x:,.0f}'),
+            textposition='auto',
+        ))
+        
+        fig.add_trace(go.Bar(
+            name='Saldo Pendiente',
+            x=df_chart['Fondo'],
+            y=df_chart['Saldo Pendiente'],
+            marker_color='coral',
+            text=df_chart['Saldo Pendiente'].apply(lambda x: f'${x:,.0f}'),
+            textposition='auto',
+        ))
+        
+        fig.update_layout(
+            title='Comparación de Fondos SGR',
+            xaxis_title='Tipo de Fondo',
+            yaxis_title='Valor (COP)',
+            barmode='group',
+            height=500,
+            showlegend=True,
+            hovermode='x unified'
+        )
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error al crear gráfico por fondo: {str(e)}")
+        return None
+
+# Función para crear gráfico de distribución por departamento
+def create_departamento_distribution_chart(df_filtrado, top_n=10):
+    """Crea un gráfico de barras horizontales por departamento"""
+    try:
+        # Agrupar por departamento
+        dept_data = df_filtrado.groupby('nombredepartamento').agg({
+            'presupuestosgrinversion': 'sum',
+            'recursosaprobadosasignadosspgr': 'sum',
+            'numeroproyectosaprobados': lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
+        }).reset_index()
+        
+        # Tomar top N departamentos
+        dept_data = dept_data.nlargest(top_n, 'presupuestosgrinversion')
+        
+        if dept_data.empty:
+            return None
+            
+        # Crear gráfico de barras horizontales
+        fig = px.bar(
+            dept_data,
+            x='presupuestosgrinversion',
+            y='nombredepartamento',
+            orientation='h',
+            title=f'Top {top_n} Departamentos por Presupuesto SGR',
+            labels={'presupuestosgrinversion': 'Presupuesto (COP)', 'nombredepartamento': 'Departamento'},
+            color='presupuestosgrinversion',
+            color_continuous_scale='Blues'
+        )
+        
+        fig.update_layout(
+            height=600,
+            showlegend=False,
+            yaxis={'categoryorder': 'total ascending'}
+        )
+        
+        # Agregar texto con valores
+        fig.update_traces(
+            texttemplate='$%{x:,.0f}',
+            textposition='outside'
+        )
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error al crear gráfico por departamento: {str(e)}")
+        return None
+
+# Función para crear gráfico de pastel por fondo
+def create_fondo_pie_chart(df_filtrado, fondos_interes):
+    """Crea un gráfico de pastel mostrando distribución por fondo"""
+    try:
+        # Preparar datos
+        pie_data = []
+        for fondo in fondos_interes:
+            datos_fondo = df_filtrado[df_filtrado['nombrefondo'] == fondo]
+            if len(datos_fondo) > 0:
+                pie_data.append({
+                    'Fondo': fondo.replace('ASIGNACION PARA LA INVERSION LOCAL', 'INVERSIÓN LOCAL'),
+                    'Presupuesto': datos_fondo['presupuestosgrinversion'].sum()
+                })
+        
+        if not pie_data:
+            return None
+            
+        df_pie = pd.DataFrame(pie_data)
+        
+        # Crear gráfico de pastel
+        fig = px.pie(
+            df_pie,
+            values='Presupuesto',
+            names='Fondo',
+            title='Distribución del Presupuesto por Tipo de Fondo'
+        )
+        
+        fig.update_traces(
+            textposition='inside',
+            textinfo='percent+label',
+            hovertemplate='<b>%{label}</b><br>Presupuesto: $%{value:,.0f}<br>Porcentaje: %{percent}<extra></extra>'
+        )
+        
+        fig.update_layout(height=500)
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error al crear gráfico de pastel: {str(e)}")
+        return None
+
+# Función para crear métricas visuales con KPIs
+def create_kpi_metrics(df_filtrado):
+    """Crea métricas visuales con indicadores de progreso"""
+    try:
+        total_presupuesto = df_filtrado['presupuestosgrinversion'].sum()
+        total_aprobado = df_filtrado['recursosaprobadosasignadosspgr'].sum()
+        
+        if total_presupuesto > 0:
+            porcentaje_aprobado = (total_aprobado / total_presupuesto) * 100
+        else:
+            porcentaje_aprobado = 0
+            
+        # Crear gauge chart
+        fig = go.Figure(go.Indicator(
+            mode = "gauge+number+delta",
+            value = porcentaje_aprobado,
+            domain = {'x': [0, 1], 'y': [0, 1]},
+            title = {'text': "% de Recursos Aprobados vs Presupuesto"},
+            delta = {'reference': 80},
+            gauge = {
+                'axis': {'range': [None, 100]},
+                'bar': {'color': "darkgreen"},
+                'steps': [
+                    {'range': [0, 50], 'color': "lightgray"},
+                    {'range': [50, 80], 'color': "yellow"},
+                    {'range': [80, 100], 'color': "lightgreen"}
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 90
+                }
+            }
+        ))
+        
+        fig.update_layout(height=400)
+        
+        return fig, porcentaje_aprobado
+        
+    except Exception as e:
+        st.error(f"Error al crear métricas KPI: {str(e)}")
+        return None, 0
+
 # Función para convertir DataFrame a Excel
 def convert_df_to_excel(df):
     """Convierte el DataFrame a Excel para descarga"""
@@ -354,11 +555,11 @@ municipios_geo = load_municipios_geo()
 colombia_geojson = load_colombia_geojson()
 
 if not df.empty:
-    # Definir fondos de interés
+    # Definir fondos de interés (exactamente 3 tipos)
     fondos_interes = [
+        'ASIGNACIONES DIRECTAS',
         'ASIGNACION PARA LA INVERSION LOCAL',
-        'ASIGNACION PARA LA INVERSION LOCAL - AMBIENTE Y DESARROLLO SOSTENIBLE',
-        'ASIGNACIONES DIRECTAS'
+        'ASIGNACION PARA LA INVERSION LOCAL - AMBIENTE Y DESARROLLO SOSTENIBLE'
     ]
     
     # Primero filtrar el DataFrame base por los fondos de interés
@@ -401,8 +602,15 @@ if not df.empty:
         departamentos_disponibles
     )
     
-    # Filtro por Entidad - basado en datos filtrados
-    entidades_disponibles = ['Todos'] + sorted(df_base_filtrado['nombreentidad'].unique().tolist())
+    # Filtro por Entidad - dinámico según departamento seleccionado
+    if filtro_departamento != 'Todos':
+        # Filtrar entidades solo del departamento seleccionado
+        entidades_dept = df_base_filtrado[df_base_filtrado['nombredepartamento'] == filtro_departamento]
+        entidades_disponibles = ['Todos'] + sorted(entidades_dept['nombreentidad'].unique().tolist())
+    else:
+        # Mostrar todas las entidades si no hay departamento seleccionado
+        entidades_disponibles = ['Todos'] + sorted(df_base_filtrado['nombreentidad'].unique().tolist())
+    
     filtro_entidad = st.sidebar.selectbox(
         "Seleccionar Entidad:",
         entidades_disponibles
@@ -428,7 +636,7 @@ if not df.empty:
     
     if len(df_filtrado) > 0:
         # Crear tabs para organizar el contenido
-        tab1, tab2 = st.tabs(["📊 Tabla de Datos", "🗺️ Mapa Interactivo"])
+        tab1, tab2, tab3 = st.tabs(["📊 Datos y Resumen", "📈 Gráficos Interactivos", "🗺️ Mapa Interactivo"])
         
         with tab1:
             # Mostrar métricas de los datos filtrados
@@ -446,6 +654,42 @@ if not df.empty:
                 proyectos_filtrado = pd.to_numeric(df_filtrado['numeroproyectosaprobados'], errors='coerce').fillna(0).sum()
                 st.metric("Proyectos Filtrados", f"{int(proyectos_filtrado):,}")
             
+            # Resumen por tipo de fondo
+            st.subheader("📊 Resumen por Tipo de Fondo")
+            
+            # Crear métricas por fondo
+            fondos_resumen = []
+            for fondo in fondos_interes:
+                datos_fondo = df_filtrado[df_filtrado['nombrefondo'] == fondo]
+                if len(datos_fondo) > 0:
+                    fondos_resumen.append({
+                        'Fondo': fondo,
+                        'Total Registros': len(datos_fondo),
+                        'Presupuesto Total': datos_fondo['presupuestosgrinversion'].sum(),
+                        'Recursos Aprobados': datos_fondo['recursosaprobadosasignadosspgr'].sum(),
+                        'Saldo Pendiente': datos_fondo['SALDO_PENDIENTE'].sum()
+                    })
+            
+            if fondos_resumen:
+                # Mostrar métricas por fondo en columnas
+                for i, fondo_data in enumerate(fondos_resumen):
+                    st.write(f"**{fondo_data['Fondo']}**")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Registros", f"{fondo_data['Total Registros']:,}")
+                    with col2:
+                        st.metric("Presupuesto", f"${fondo_data['Presupuesto Total']:,.0f}")
+                    with col3:
+                        st.metric("Recursos Aprobados", f"${fondo_data['Recursos Aprobados']:,.0f}")
+                    with col4:
+                        st.metric("Saldo Pendiente", f"${fondo_data['Saldo Pendiente']:,.0f}")
+                    
+                    if i < len(fondos_resumen) - 1:
+                        st.markdown("---")
+            
+            st.markdown("---")
+            
             # Mostrar tabla
             st.dataframe(
                 df_filtrado,
@@ -454,6 +698,50 @@ if not df.empty:
             )
         
         with tab2:
+            # Pestaña de Gráficos Interactivos
+            st.header("📈 Análisis Visual de Datos SGR")
+            
+            # KPI Principal
+            kpi_fig, porcentaje_aprobado = create_kpi_metrics(df_filtrado)
+            if kpi_fig:
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    st.plotly_chart(kpi_fig, use_container_width=True)
+                with col2:
+                    st.metric("Eficiencia de Aprobación", f"{porcentaje_aprobado:.1f}%")
+                    if porcentaje_aprobado >= 80:
+                        st.success("🎯 Excelente eficiencia de aprobación!")
+                    elif porcentaje_aprobado >= 60:
+                        st.warning("⚠️ Eficiencia moderada")
+                    else:
+                        st.error("⚡ Baja eficiencia de aprobación")
+            
+            st.markdown("---")
+            
+            # Gráfico comparativo por fondo
+            st.subheader("💰 Comparación por Tipo de Fondo")
+            fondo_chart = create_fondo_comparison_chart(df_filtrado, fondos_interes)
+            if fondo_chart:
+                st.plotly_chart(fondo_chart, use_container_width=True)
+            
+            # Gráficos en columnas
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Gráfico de pastel
+                st.subheader("🥧 Distribución del Presupuesto")
+                pie_chart = create_fondo_pie_chart(df_filtrado, fondos_interes)
+                if pie_chart:
+                    st.plotly_chart(pie_chart, use_container_width=True)
+            
+            with col2:
+                # Gráfico de departamentos
+                st.subheader("🏛️ Top 10 Departamentos")
+                dept_chart = create_departamento_distribution_chart(df_filtrado, top_n=10)
+                if dept_chart:
+                    st.plotly_chart(dept_chart, use_container_width=True)
+        
+        with tab3:
             # Selector de tipo de mapa
             map_type = st.radio(
                 "Selecciona el tipo de visualización:",

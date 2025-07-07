@@ -8,7 +8,7 @@ echo "🚀 Iniciando Dashboard SGR..."
 echo "📂 Navegando al directorio del proyecto..."
 
 # Navegar al directorio del proyecto
-cd /Users/daniel/Desktop/OctopusDash
+cd /Users/daniel/Desktop/dashboard-sgr
 
 # Verificar que el directorio existe
 if [ ! -d ".venv" ]; then
