@@ -559,7 +559,7 @@ if not df.empty:
     fondos_interes = [
         'ASIGNACIONES DIRECTAS',
         'ASIGNACION PARA LA INVERSION LOCAL',
-        'ASIGNACION PARA LA INVERSION LOCAL - AMBIENTE Y DESARROLLO SOSTENIBLE'
+        'ASIGNACION PARA LA INVERSION LOCAL -  AMBIENTE Y DESARROLLO SOSTENIBLE'
     ]
     
     # Primero filtrar el DataFrame base por los fondos de interés
@@ -595,25 +595,14 @@ if not df.empty:
         fondos_disponibles
     )
     
-    # Filtro por Departamento - basado en datos filtrados
-    departamentos_disponibles = ['Todos'] + sorted(df_base_filtrado['nombredepartamento'].unique().tolist())
-    filtro_departamento = st.sidebar.selectbox(
-        "Seleccionar Departamento:",
-        departamentos_disponibles
-    )
     
-    # Filtro por Entidad - dinámico según departamento seleccionado
-    if filtro_departamento != 'Todos':
-        # Filtrar entidades solo del departamento seleccionado
-        entidades_dept = df_base_filtrado[df_base_filtrado['nombredepartamento'] == filtro_departamento]
-        entidades_disponibles = ['Todos'] + sorted(entidades_dept['nombreentidad'].unique().tolist())
-    else:
-        # Mostrar todas las entidades si no hay departamento seleccionado
-        entidades_disponibles = ['Todos'] + sorted(df_base_filtrado['nombreentidad'].unique().tolist())
+    # Filtro por Entidad (selección múltiple)
+    entidades_disponibles = sorted(df_base_filtrado['nombreentidad'].unique().tolist())
     
-    filtro_entidad = st.sidebar.selectbox(
-        "Seleccionar Entidad:",
-        entidades_disponibles
+    filtro_entidades = st.sidebar.multiselect(
+        "Seleccionar Entidades:",
+        entidades_disponibles,
+        default=[]
     )
     
     # Aplicar filtros paso a paso
@@ -622,14 +611,10 @@ if not df.empty:
     # Aplicar filtro de fondo
     if filtro_fondo != 'Todos':
         df_filtrado = df_filtrado[df_filtrado['nombrefondo'] == filtro_fondo]
-    
-    # Aplicar filtro de departamento
-    if filtro_departamento != 'Todos':
-        df_filtrado = df_filtrado[df_filtrado['nombredepartamento'] == filtro_departamento]
         
-    # Aplicar filtro de entidad
-    if filtro_entidad != 'Todos':
-        df_filtrado = df_filtrado[df_filtrado['nombreentidad'] == filtro_entidad]
+    # Aplicar filtro de entidades (selección múltiple)
+    if filtro_entidades:
+        df_filtrado = df_filtrado[df_filtrado['nombreentidad'].isin(filtro_entidades)]
     
     # Mostrar información de los datos filtrados
     st.subheader(f"📋 Datos Filtrados ({len(df_filtrado)} registros)")
@@ -690,9 +675,20 @@ if not df.empty:
             
             st.markdown("---")
             
-            # Mostrar tabla
+            # Mostrar tabla (excluyendo columnas específicas)
+            columns_to_exclude = ['codigofondo', 'codigodanedepartamento', 'codigodaneentidad', 'nombrebolsaregional']
+            df_tabla = df_filtrado.drop(columns=[col for col in columns_to_exclude if col in df_filtrado.columns])
+            
+            # Formatear columnas monetarias
+            df_tabla_formatted = df_tabla.copy()
+            monetary_columns = ['presupuestosgrinversion', 'recursosaprobadosasignadosspgr', 'SALDO_PENDIENTE']
+            
+            for col in monetary_columns:
+                if col in df_tabla_formatted.columns:
+                    df_tabla_formatted[col] = df_tabla_formatted[col].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+            
             st.dataframe(
-                df_filtrado,
+                df_tabla_formatted,
                 use_container_width=True,
                 height=400
             )
