@@ -154,11 +154,19 @@ def prepare_choropleth_data(df_filtrado):
         # Normalizar nombres de departamentos para el join
         dept_data['dept_normalized'] = dept_data['nombredepartamento'].str.upper().str.strip()
         
-        # Mapeo de nombres de departamentos (algunos pueden diferir)
+        # Mapeo de nombres de departamentos (para coincidir con GeoJSON)
         dept_mapping = {
-            'BOGOTÁ D.C.': 'BOGOTÁ',
-            'ARCHIPIÉLAGO DE SAN ANDRÉS, PROVIDENCIA Y SANTA CATALINA': 'SAN ANDRÉS Y PROVIDENCIA',
-            'VALLE DEL CAUCA': 'VALLE DEL CAUCA'
+            'ARCHIPIÉLAGO DE SAN ANDRÉS': 'ARCHIPIELAGO DE SAN ANDRES PROVIDENCIA Y SANTA CATALINA',
+            'ATLÁNTICO': 'ATLANTICO',
+            'BOGOTÁ D.C.': 'SANTAFE DE BOGOTA D.C',
+            'BOLÍVAR': 'BOLIVAR',
+            'BOYACÁ': 'BOYACA',
+            'CAQUETÁ': 'CAQUETA',
+            'CHOCÓ': 'CHOCO',
+            'CÓRDOBA': 'CORDOBA',
+            'GUAINÍA': 'GUAINIA',
+            'QUINDÍO': 'QUINDIO',
+            'VAUPÉS': 'VAUPES',
         }
         
         for old_name, new_name in dept_mapping.items():
@@ -741,11 +749,11 @@ if not df.empty:
             # Selector de tipo de mapa
             map_type = st.radio(
                 "Selecciona el tipo de visualización:",
-                ["🗺️ Mapa Coroplético (Solo Departamentos)", "📍 Mapa de Puntos (Solo Municipios)"],
+                ["🗺️ Mapa Departamental", "📍 Mapa Municipal"],
                 horizontal=True
             )
             
-            if map_type == "🗺️ Mapa Coroplético (Solo Departamentos)":
+            if map_type == "🗺️ Mapa Departamental":
                 # Mapa coroplético solo de departamentos
                 if colombia_geojson:
                     choropleth_result = create_choropleth_map(df_filtrado, colombia_geojson)
@@ -753,7 +761,7 @@ if not df.empty:
                     if choropleth_result and choropleth_result[0]:
                         deck_map, dept_data = choropleth_result
                         
-                        st.subheader("🗺️ Mapa Coroplético por Departamentos")
+                        st.subheader("🗺️ Mapa Departamental")
                         
                         # Métricas del mapa
                         col1, col2, col3 = st.columns(3)
@@ -802,7 +810,7 @@ if not df.empty:
                     map_data = prepare_map_data(df_filtrado, municipios_geo)
                     
                     if not map_data.empty:
-                        st.subheader("📍 Mapa de Puntos por Municipios")
+                        st.subheader("📍 Mapa Municipal")
                         
                         # Métricas del mapa
                         col1, col2, col3 = st.columns(3)
