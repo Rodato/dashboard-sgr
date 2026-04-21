@@ -15,19 +15,11 @@ FONDOS_INTERES = [
     "ASIGNACION PARA LA INVERSION LOCAL -  AMBIENTE Y DESARROLLO SOSTENIBLE",
 ]
 
-# Department name mapping: SGR names -> GeoJSON names
+# Department name mapping: SGR names -> GeoJSON names.
+# Only irregular cases; tilde/diacritic differences are handled by strip_accents.
 DEPT_NAME_MAPPING = {
     "ARCHIPIÉLAGO DE SAN ANDRÉS": "ARCHIPIELAGO DE SAN ANDRES PROVIDENCIA Y SANTA CATALINA",
-    "ATLÁNTICO": "ATLANTICO",
     "BOGOTÁ D.C.": "SANTAFE DE BOGOTA D.C",
-    "BOLÍVAR": "BOLIVAR",
-    "BOYACÁ": "BOYACA",
-    "CAQUETÁ": "CAQUETA",
-    "CHOCÓ": "CHOCO",
-    "CÓRDOBA": "CORDOBA",
-    "GUAINÍA": "GUAINIA",
-    "QUINDÍO": "QUINDIO",
-    "VAUPÉS": "VAUPES",
 }
 
 # Columns to exclude from data table display
@@ -45,6 +37,22 @@ MONETARY_COLUMNS = [
     "SALDO_PENDIENTE",
 ]
 
+# Friendly labels for API columns (used in glossary + data table headers)
+COLUMN_LABELS = {
+    "vigencia": "Vigencia",
+    "codigofondo": "Codigo del Fondo",
+    "nombrefondo": "Fondo",
+    "codigodanedepartamento": "Codigo DANE Departamento",
+    "nombredepartamento": "Departamento",
+    "codigodaneentidad": "Codigo DANE Entidad",
+    "nombreentidad": "Entidad",
+    "nombrebolsaregional": "Bolsa Regional",
+    "presupuestosgrinversion": "Presupuesto SGR (Inversion)",
+    "numeroproyectosaprobados": "Proyectos Aprobados",
+    "recursosaprobadosasignadosspgr": "Recursos Aprobados",
+    "SALDO_PENDIENTE": "Saldo Pendiente",
+}
+
 # GeoJSON
 GEOJSON_LOCAL_PATH = "data/colombia.geo.json"
 GEOJSON_URL = (
@@ -57,4 +65,4 @@ GEOJSON_URL = (
 MAP_CENTER_LAT = 4.5709
 MAP_CENTER_LON = -74.2973
 DEFAULT_ZOOM = 5
-MAP_STYLE = "mapbox://styles/mapbox/light-v11"
+MAP_STYLE = "light"

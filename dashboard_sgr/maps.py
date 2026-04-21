@@ -4,7 +4,17 @@ import streamlit as st
 
 from dashboard_sgr.config import MAP_CENTER_LAT, MAP_CENTER_LON, DEFAULT_ZOOM, MAP_STYLE
 from dashboard_sgr.data import prepare_choropleth_data
-from dashboard_sgr.utils import normalize_color_intensity
+from dashboard_sgr.utils import normalize_color_intensity, strip_accents
+
+
+# Professional blue gradient: light -> dark navy. Input: intensity 0-255.
+def _blue_ramp(intensity):
+    # Light #E8EEF4 (232,238,244) -> Dark #083358 (8,51,88)
+    t = intensity / 255.0
+    r = int(232 + (8 - 232) * t)
+    g = int(238 + (51 - 238) * t)
+    b = int(244 + (88 - 244) * t)
+    return [r, g, b, 210]
 
 
 def create_choropleth_map(df_filtrado, geojson_data):
@@ -26,7 +36,7 @@ def create_choropleth_map(df_filtrado, geojson_data):
         for _, row in dept_data.iterrows():
             dept_name = row["dept_normalized"]
             i = row["color_intensity"]
-            color_dict[dept_name] = [i, 50, 255 - i, 200]
+            color_dict[dept_name] = _blue_ramp(i)
 
             proyectos = int(row["numeroproyectosaprobados"]) if pd.notna(row["numeroproyectosaprobados"]) else 0
             tooltip_dict[dept_name] = (
@@ -37,24 +47,35 @@ def create_choropleth_map(df_filtrado, geojson_data):
                 f"Recursos Aprobados: ${row['recursosaprobadosasignadosspgr']:,.0f}"
             )
 
+        geojson_render = {
+            "type": geojson_data.get("type", "FeatureCollection"),
+            "features": [],
+        }
         for feature in geojson_data["features"]:
-            dept_name = feature["properties"].get("NOMBRE_DPT", "").upper().strip()
-            if dept_name in color_dict:
-                feature["properties"]["fill_color"] = color_dict[dept_name]
-                feature["properties"]["tooltip"] = tooltip_dict[dept_name]
+            raw_name = feature["properties"].get("NOMBRE_DPT", "").upper().strip()
+            dept_key = strip_accents(raw_name)
+            new_props = dict(feature["properties"])
+            if dept_key in color_dict:
+                new_props["fill_color"] = color_dict[dept_key]
+                new_props["tooltip"] = tooltip_dict[dept_key]
             else:
-                feature["properties"]["fill_color"] = [200, 200, 200, 100]
-                feature["properties"]["tooltip"] = f"{dept_name}\nSin datos disponibles"
+                new_props["fill_color"] = [203, 213, 225, 140]
+                new_props["tooltip"] = f"{raw_name}\nSin datos disponibles"
+            geojson_render["features"].append({
+                **feature,
+                "properties": new_props,
+            })
 
         choropleth_layer = pdk.Layer(
             "GeoJsonLayer",
-            data=geojson_data,
+            data=geojson_render,
             get_fill_color="properties.fill_color",
-            get_line_color=[80, 80, 80, 200],
-            get_line_width=2,
+            get_line_color=[255, 255, 255, 180],
+            get_line_width=1,
+            line_width_min_pixels=1,
             pickable=True,
             auto_highlight=True,
-            opacity=0.8,
+            opacity=0.9,
         )
 
         view_state = pdk.ViewState(

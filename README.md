@@ -1,138 +1,84 @@
-# Dashboard SGR - Sistema General de Regalías
+# Dashboard SGR
 
-Dashboard interactivo para la visualización de datos del Sistema General de Regalías (SGR) de Colombia, utilizando datos abiertos del gobierno colombiano.
+Dashboard ejecutivo para el Sistema General de Regalías (SGR) de Colombia. Consume el dataset abierto `g4qj-2p2e` de datos.gov.co y presenta una vista consolidada de presupuesto asignado, recursos aprobados y saldo pendiente por departamento, fondo y entidad ejecutora.
 
-## 🌟 Características
+## Alcance
 
-- **Visualización Interactiva**: Mapas departamentales y municipales con datos en tiempo real
-- **Filtros Dinámicos**: Filtrado por tipo de fondo, departamento y entidad ejecutora
-- **Múltiples Visualizaciones**: 
-  - Mapas coropléticos por departamentos
-  - Mapas de puntos por municipios
-  - Tablas de datos interactivas
-- **Exportación**: Descarga de datos filtrados en formato Excel
-- **Datos en Tiempo Real**: Conexión directa con la API de datos.gov.co
+El tablero restringe la información a tres tipos de fondo del SGR:
 
-## 🚀 Instalación y Configuración
-
-### Prerequisitos
-
-- Python 3.7+
-- pip (gestor de paquetes de Python)
-
-### Instalación
-
-1. **Clonar el repositorio**
-   ```bash
-   git clone https://github.com/Rodato/dashboard-sgr.git
-   cd dashboard-sgr
-   ```
-
-2. **Crear entorno virtual**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # En Windows: .venv\Scripts\activate
-   ```
-
-3. **Instalar dependencias**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## 🏃‍♂️ Ejecución
-
-### Usando el script de lanzamiento
-```bash
-./run_dashboard.sh
-```
-
-### Usando Streamlit directamente
-```bash
-streamlit run dashboard_sgr.py
-```
-
-### Usando módulo de Python
-```bash
-python -m streamlit run dashboard_sgr.py
-```
-
-El dashboard estará disponible en `http://localhost:8501`
-
-## 📊 Fuentes de Datos
-
-- **API Principal**: [datos.gov.co - Dataset SGR](https://www.datos.gov.co/resource/g4qj-2p2e.json)
-- **Datos Geográficos**: 
-  - Coordenadas municipales: `divipola.csv`
-  - Límites departamentales: GeoJSON de Colombia
-- **Actualización**: Los datos se actualizan automáticamente cada hora
-
-## 🗺️ Tipos de Visualización
-
-### Mapa Departamental
-- Visualización coroplética que muestra la distribución de recursos por departamento
-- Colores más intensos indican mayor asignación de recursos
-- Información detallada al hacer hover sobre cada departamento
-
-### Mapa Municipal
-- Visualización de puntos que muestra proyectos específicos por municipio
-- Tamaño de los puntos proporcional al monto asignado
-- Información detallada de cada proyecto en tooltips
-
-## 📈 Métricas Disponibles
-
-- **Valor Asignado**: Monto total de recursos asignados
-- **Saldo por Ejecutar**: Recursos pendientes de ejecución
-- **Número de Proyectos**: Cantidad de proyectos en el área seleccionada
-- **Entidades Ejecutoras**: Número de entidades involucradas
-
-## 🔧 Arquitectura Técnica
-
-### Componentes Principales
-
-1. **Carga de Datos** (`load_data()`): Cliente Socrata API con caché de 1 hora
-2. **Procesamiento Geoespacial** (`load_municipios_geo()`): Enriquecimiento con coordenadas
-3. **Preparación de Datos**: Agregación y transformación para visualización
-4. **Visualización**: Mapas interactivos con pydeck y Streamlit
-
-### Dependencias Clave
-
-- **Streamlit**: Framework de aplicaciones web
-- **Pydeck**: Visualizaciones de mapas 3D
-- **Pandas**: Manipulación de datos
-- **Requests**: Conexión a APIs
-- **Plotly**: Gráficos interactivos
-
-## 🎛️ Configuración
-
-### Filtros de Fondos SGR
-El dashboard se enfoca en los siguientes tipos de fondos:
-- Asignación para la Inversión Local
-- Asignación para la Inversión Local - Ambiente y Desarrollo Sostenible
 - Asignaciones Directas
+- Asignación para la Inversión Local
+- Asignación para la Inversión Local — Ambiente y Desarrollo Sostenible
 
-### Cache y Rendimiento
-- TTL de caché: 1 hora para datos de API
-- Optimización de consultas geoespaciales
-- Carga lazy de datos geográficos
+Para cada uno se expone presupuesto total, recursos aprobados y saldo pendiente, con la posibilidad de filtrar por departamento, entidad, vigencia y texto libre.
 
-## 🤝 Contribuir
+## Estructura del producto
 
-1. Fork el proyecto
-2. Crear rama para feature (`git checkout -b feature/nueva-funcionalidad`)
-3. Commit los cambios (`git commit -m 'Agregar nueva funcionalidad'`)
-4. Push a la rama (`git push origin feature/nueva-funcionalidad`)
-5. Abrir Pull Request
+El dashboard se organiza en dos pestañas:
 
-## 📝 Licencia
+**Resumen** — vista ejecutiva de un solo scroll.
+- Cuatro tarjetas KPI: presupuesto, recursos aprobados, saldo pendiente y porcentaje de ejecución.
+- Gráfico principal: top 10 departamentos con presupuesto apilado (aprobado vs. saldo pendiente) y porcentaje de ejecución por departamento.
+- Callout: cinco departamentos con menor ejecución.
+- Distribución del presupuesto por fondo (donut con total central).
+- Botón de descarga del dataset filtrado en Excel.
 
-Este proyecto está bajo la Licencia MIT. Ver el archivo `LICENSE` para más detalles.
+**Detalles** — drill-down por fondo.
+- Selector de fondo único; el resto de secciones se recalcula según la selección.
+- Top N entidades con mayor saldo pendiente.
+- Distribución jerárquica (Treemap / Sunburst intercambiables).
+- Tabla completa con formato monetario nativo.
+- Descarga del fondo seleccionado en Excel.
+- Glosario de columnas.
 
-## 📞 Contacto
+Los filtros del sidebar (fondos, departamentos, entidades, vigencias, búsqueda) afectan ambas pestañas y se sincronizan con la URL para compartir vistas específicas.
 
-Para preguntas, sugerencias o reportar problemas, por favor abrir un issue en este repositorio.
+## Arquitectura
 
-## 🙏 Reconocimientos
+```
+dashboard_sgr.py              # Orquestador: header, sidebar, tabs
+dashboard_sgr/
+├── config.py                 # Constantes: API, fondos, etiquetas de columnas
+├── data.py                   # Carga Socrata (paginación + retry), DANE, prep mapas
+├── charts.py                 # Gráficos Plotly con paleta unificada
+├── maps.py                   # Capas pydeck (disponibles, no activas)
+├── theme.py                  # Paleta, CSS inyectable, helpers de layout
+└── utils.py                  # Helpers de agregación, formato, exportación
+data/
+└── colombia.geo.json         # Límites departamentales (fallback remoto)
+divipola.csv                  # Coordenadas municipales
+```
 
-- **Datos.gov.co**: Por proporcionar acceso a los datos abiertos del SGR
-- **Streamlit**: Por el excelente framework de desarrollo
-- **OpenStreetMap**: Por los datos geográficos base
+- `data.load_data()` consulta la API de Socrata con cláusula `where` para traer únicamente los tres fondos de interés. Cache de 1 h vía `st.cache_data`.
+- `charts.*` usa la paleta definida en `theme.PALETTE` y el helper `_currency_ticks` para que todos los ejes monetarios tengan formato consistente (`$500B`, `$1T`).
+- Los filtros del sidebar se persisten en `st.query_params` (claves cortas `f`, `d`, `e`, `v`, `q`) y en `st.session_state` para permitir URLs compartibles y filtros en cascada.
+
+## Instalación
+
+Requiere Python 3.9 o superior.
+
+```bash
+git clone https://github.com/Rodato/dashboard-sgr.git
+cd dashboard-sgr
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Ejecución
+
+```bash
+python3 -m streamlit run dashboard_sgr.py
+```
+
+El dashboard queda disponible en `http://localhost:8501`. El archivo `run_dashboard.sh` ofrece el mismo arranque como script.
+
+## Fuentes de datos
+
+- **API**: `https://www.datos.gov.co/resource/g4qj-2p2e.json` (Socrata).
+- **Límites departamentales**: `data/colombia.geo.json` local con fallback remoto a un gist público.
+- **Coordenadas municipales**: `divipola.csv` (códigos DANE → lat/lon).
+
+## Licencia
+
+MIT. Ver el archivo `LICENSE`.
