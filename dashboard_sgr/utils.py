@@ -1,6 +1,16 @@
 import io
+import unicodedata
 
 import pandas as pd
+
+
+def strip_accents(text):
+    """Strip diacritical marks (á→a, ñ→n) for fuzzy string matching."""
+    if not isinstance(text, str):
+        return text
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
+    )
 
 
 def normalize_color_intensity(series):

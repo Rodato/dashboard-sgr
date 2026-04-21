@@ -14,11 +14,18 @@ from dashboard_sgr.config import (
     CACHE_TTL,
     DATASET_ID,
     DEPT_NAME_MAPPING,
+    FONDOS_INTERES,
     GEOJSON_LOCAL_PATH,
     GEOJSON_URL,
     SOCRATA_DOMAIN,
 )
-from dashboard_sgr.utils import aggregate_sgr_data, normalize_color_intensity
+from dashboard_sgr.utils import aggregate_sgr_data, normalize_color_intensity, strip_accents
+
+
+def _build_fondos_where_clause(fondos):
+    escaped = [f.replace("'", "''") for f in fondos]
+    quoted = ", ".join(f"'{f}'" for f in escaped)
+    return f"nombrefondo in ({quoted})"
 
 
 @st.cache_data(ttl=CACHE_TTL)
@@ -29,9 +36,15 @@ def load_data():
             client = Socrata(SOCRATA_DOMAIN, None)
             all_results = []
             offset = 0
+            where_clause = _build_fondos_where_clause(FONDOS_INTERES)
 
             while True:
-                batch = client.get(DATASET_ID, limit=API_ROW_LIMIT, offset=offset)
+                batch = client.get(
+                    DATASET_ID,
+                    where=where_clause,
+                    limit=API_ROW_LIMIT,
+                    offset=offset,
+                )
                 if not batch:
                     break
                 all_results.extend(batch)
@@ -54,9 +67,6 @@ def load_data():
             df["codigodanedepartamento"] = pd.to_numeric(
                 df["codigodanedepartamento"], errors="coerce"
             )
-            invalid_dept = df["codigodanedepartamento"].isna().sum()
-            if invalid_dept > 0:
-                st.info(f"{invalid_dept} filas descartadas por codigo departamento invalido.")
             df = df.dropna(subset=["codigodanedepartamento"])
             df["codigodanedepartamento"] = (df["codigodanedepartamento"] / 1000).astype(int)
 
@@ -64,9 +74,6 @@ def load_data():
             df["codigodaneentidad"] = pd.to_numeric(
                 df["codigodaneentidad"].str.strip(), errors="coerce"
             )
-            invalid_ent = df["codigodaneentidad"].isna().sum()
-            if invalid_ent > 0:
-                st.info(f"{invalid_ent} filas descartadas por codigo entidad invalido.")
             df = df.dropna(subset=["codigodaneentidad"])
             df["codigodaneentidad"] = df["codigodaneentidad"].astype(int)
             df["codigodaneentidad"] = df["codigodaneentidad"].apply(
@@ -130,9 +137,16 @@ def load_colombia_geojson():
 
 
 def prepare_map_data(df_filtrado, municipios_df):
-    """Prepare municipality-level data for the scatter map."""
+    """Prepare municipality-level data for the scatter map.
+
+    Returns (map_data, unmatched_df) — unmatched_df lists entities whose DANE code
+    did not match any row in divipola.csv.
+    """
+    empty_unmatched = pd.DataFrame(
+        columns=["codigodaneentidad", "nombreentidad", "nombredepartamento"]
+    )
     if municipios_df.empty:
-        return pd.DataFrame(), 0
+        return pd.DataFrame(), empty_unmatched
 
     try:
         group_cols = ["codigodaneentidad", "nombreentidad", "nombredepartamento"]
@@ -146,31 +160,46 @@ def prepare_map_data(df_filtrado, municipios_df):
             how="inner",
         )
 
-        unmatched = len(df_agrupado) - len(map_data)
+        matched_codes = set(map_data["codigodaneentidad"].unique())
+        unmatched_df = df_agrupado[
+            ~df_agrupado["codigodaneentidad"].isin(matched_codes)
+        ][group_cols].copy()
 
         if len(map_data) > 0:
             intensity = normalize_color_intensity(map_data["presupuestosgrinversion"])
-            map_data["color_r"] = intensity
-            map_data["color_g"] = 100
-            map_data["color_b"] = 255 - intensity
-            map_data["color_a"] = 200
+            # Blue ramp: light #E8EEF4 (232,238,244) -> dark #083358 (8,51,88)
+            t = intensity / 255.0
+            map_data["color_r"] = (232 + (8 - 232) * t).astype(int)
+            map_data["color_g"] = (238 + (51 - 238) * t).astype(int)
+            map_data["color_b"] = (244 + (88 - 244) * t).astype(int)
+            map_data["color_a"] = 220
 
-            map_data["tooltip"] = map_data.apply(
-                lambda row: (
+            def _build_tooltip(row):
+                presupuesto = row["presupuestosgrinversion"]
+                aprobado = row["recursosaprobadosasignadosspgr"]
+                saldo = row["SALDO_PENDIENTE"]
+                ejecucion = (aprobado / presupuesto * 100) if presupuesto > 0 else 0
+                proyectos = (
+                    int(row["numeroproyectosaprobados"])
+                    if pd.notna(row["numeroproyectosaprobados"]) else 0
+                )
+                return (
                     f"{row['NOM_MPIO']}\n"
                     f"{row['NOM_DPTO']}\n"
-                    f"Presupuesto: ${row['presupuestosgrinversion']:,.0f}\n"
+                    f"Presupuesto: ${presupuesto:,.0f}\n"
+                    f"Aprobado: ${aprobado:,.0f} ({ejecucion:.1f}%)\n"
+                    f"Saldo pendiente: ${saldo:,.0f}\n"
                     f"Fondo: {row['nombrefondo']}\n"
-                    f"Proyectos: {int(row['numeroproyectosaprobados']) if pd.notna(row['numeroproyectosaprobados']) else 0}"
-                ),
-                axis=1,
-            )
+                    f"Proyectos: {proyectos}"
+                )
 
-        return map_data, unmatched
+            map_data["tooltip"] = map_data.apply(_build_tooltip, axis=1)
+
+        return map_data, unmatched_df
 
     except Exception as e:
         st.warning(f"Error al preparar datos del mapa: {e}")
-        return pd.DataFrame(), 0
+        return pd.DataFrame(), empty_unmatched
 
 
 def prepare_choropleth_data(df_filtrado):
@@ -184,6 +213,8 @@ def prepare_choropleth_data(df_filtrado):
             dept_data.loc[
                 dept_data["dept_normalized"] == old_name, "dept_normalized"
             ] = new_name
+
+        dept_data["dept_normalized"] = dept_data["dept_normalized"].map(strip_accents)
 
         return dept_data
 
