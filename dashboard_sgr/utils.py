@@ -13,6 +13,29 @@ def strip_accents(text):
     )
 
 
+def short_fondo_name(name, max_len=40):
+    """Shorten verbose SGR fund names for chart labels."""
+    if not isinstance(name, str):
+        return name
+    # Known abbreviations
+    replacements = [
+        ("ASIGNACION PARA LA INVERSION LOCAL", "INVERSION LOCAL"),
+        ("ASIGNACIONES DIRECTAS", "ASIG. DIRECTAS"),
+        ("CIENCIA, TECNOLOGIA E INNOVACION", "CTeI"),
+        ("AMBIENTE Y DESARROLLO SOSTENIBLE", "AMBIENTE"),
+        ("PAZ Y POSCONFLICTO", "PAZ"),
+        ("AHORRO Y ESTABILIZACION", "AHORRO"),
+        ("REGIONAL", "REG."),
+    ]
+    result = name
+    for long, short in replacements:
+        result = result.replace(long, short)
+    result = " ".join(result.split())  # collapse whitespace
+    if len(result) > max_len:
+        result = result[: max_len - 1].rstrip() + "…"
+    return result
+
+
 def normalize_color_intensity(series):
     """Normalize a numeric series to 0-255 range for color mapping."""
     min_val = series.min()

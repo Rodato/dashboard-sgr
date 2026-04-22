@@ -5,14 +5,17 @@ from datetime import datetime
 from dashboard_sgr.config import (
     COLUMN_LABELS,
     COLUMNS_TO_EXCLUDE,
-    FONDOS_INTERES,
     MONETARY_COLUMNS,
 )
-from dashboard_sgr.data import load_data
+from dashboard_sgr.data import load_data, load_proyectos
 from dashboard_sgr.charts import (
     create_bottom_ejecucion_chart,
     create_fondo_pie_chart,
     create_presupuesto_vs_saldo_chart,
+    create_proyectos_ejecucion_chart,
+    create_proyectos_estado_chart,
+    create_proyectos_sector_donut,
+    create_proyectos_top_entidades_chart,
     create_saldo_pendiente_chart,
     create_sunburst_chart,
     create_treemap_chart,
@@ -196,7 +199,7 @@ if len(df_filtrado) == 0:
     st.warning("No se encontraron datos con los filtros seleccionados. Ajusta los filtros en la barra lateral.")
     st.stop()
 
-tab_resumen, tab_detalles = st.tabs(["Resumen", "Detalles"])
+tab_resumen, tab_detalles, tab_proyectos = st.tabs(["Resumen", "Detalles", "Proyectos"])
 
 # ===== TAB 1: RESUMEN EJECUTIVO =====
 with tab_resumen:
@@ -240,7 +243,7 @@ with tab_resumen:
             st.caption("Sin datos.")
     with col_right:
         st.markdown(section_title("Distribucion por fondo"), unsafe_allow_html=True)
-        pie_chart = create_fondo_pie_chart(df_filtrado, FONDOS_INTERES)
+        pie_chart = create_fondo_pie_chart(df_filtrado)
         if pie_chart:
             st.plotly_chart(pie_chart, use_container_width=True)
 
@@ -273,10 +276,7 @@ with tab_resumen:
 with tab_detalles:
     # --- Resumen por fondo (un fondo a la vez para evitar saturacion) ---
     st.markdown(section_title("Resumen por tipo de fondo"), unsafe_allow_html=True)
-    fondos_con_datos = [
-        f for f in FONDOS_INTERES
-        if len(df_filtrado[df_filtrado["nombrefondo"] == f]) > 0
-    ]
+    fondos_con_datos = sorted(df_filtrado["nombrefondo"].dropna().unique().tolist())
     if fondos_con_datos:
         fondo_sel = st.selectbox(
             "Ver fondo:", fondos_con_datos, key="det_fondo_sel",
@@ -310,10 +310,10 @@ with tab_detalles:
         st.info("No hay datos en ningun fondo con los filtros actuales.")
         st.stop()
 
-    # --- Top entidades por saldo pendiente ---
+    # --- Top entidades por saldo pendiente (scoped al fondo seleccionado) ---
     r1, r2 = st.columns([3, 1])
     with r1:
-        st.markdown(section_title("Entidades con mayor saldo pendiente"),
+        st.markdown(section_title(f"Entidades con mayor saldo pendiente · {fondo_sel}"),
                     unsafe_allow_html=True)
     with r2:
         top_n = st.selectbox(
@@ -321,7 +321,7 @@ with tab_detalles:
             format_func=lambda n: f"Top {n}",
             label_visibility="collapsed",
         )
-    saldo_fig = create_saldo_pendiente_chart(df_filtrado, top_n=top_n)
+    saldo_fig = create_saldo_pendiente_chart(datos_fondo, top_n=top_n)
     if saldo_fig:
         st.plotly_chart(saldo_fig, use_container_width=True)
 
@@ -390,6 +390,179 @@ with tab_detalles:
             f"Total filas cargadas: {rows_fetched:,}  ·  "
             f"Fuente: datos.gov.co (Sistema General de Regalias)"
         )
+
+# ===== TAB 3: PROYECTOS =====
+with tab_proyectos:
+    st.caption(
+        "Fuente complementaria: DNP-ProyectosSGR (dataset `mzgh-shtp`) — listado "
+        "de proyectos aprobados SGR a nivel BPIN. Independiente de las asignaciones "
+        "por fondo/vigencia del resto del dashboard."
+    )
+
+    with st.spinner("Cargando proyectos SGR..."):
+        proyectos_result = load_proyectos()
+
+    if proyectos_result is None or proyectos_result[0].empty:
+        st.error("No se pudieron cargar los proyectos.")
+    else:
+        df_proyectos_raw, proyectos_rows = proyectos_result
+
+        # Aplicar filtro de departamento del sidebar (si hay seleccion)
+        if filtro_departamentos and "departamento" in df_proyectos_raw.columns:
+            deptos_norm = {d.upper().strip() for d in filtro_departamentos}
+            df_proyectos = df_proyectos_raw[
+                df_proyectos_raw["departamento"].str.upper().str.strip().isin(deptos_norm)
+            ].copy()
+        else:
+            df_proyectos = df_proyectos_raw.copy()
+
+        # Filtros locales de proyectos
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            sectores_disp = sorted(
+                df_proyectos["sector"].dropna().unique().tolist()
+            ) if "sector" in df_proyectos.columns else []
+            filtro_sectores = st.multiselect(
+                "Sectores", sectores_disp, key="flt_sectores",
+            )
+        with fc2:
+            estados_disp = sorted(
+                df_proyectos["estado"].dropna().unique().tolist()
+            ) if "estado" in df_proyectos.columns else []
+            filtro_estados = st.multiselect(
+                "Estados", estados_disp, key="flt_estados",
+            )
+
+        if filtro_sectores:
+            df_proyectos = df_proyectos[df_proyectos["sector"].isin(filtro_sectores)]
+        if filtro_estados:
+            df_proyectos = df_proyectos[df_proyectos["estado"].isin(filtro_estados)]
+
+        # KPIs
+        total_proyectos = len(df_proyectos)
+        valor_total = df_proyectos["valortotal"].sum() if "valortotal" in df_proyectos.columns else 0
+        ejec_fis = df_proyectos["ejecucionfisica"].mean() if "ejecucionfisica" in df_proyectos.columns else 0
+        ejec_fin = df_proyectos["ejecucionfinanciera"].mean() if "ejecucionfinanciera" in df_proyectos.columns else 0
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.markdown(kpi_card("Proyectos", f"{total_proyectos:,}"), unsafe_allow_html=True)
+        with k2:
+            st.markdown(kpi_card("Valor total", format_currency(valor_total)),
+                        unsafe_allow_html=True)
+        with k3:
+            st.markdown(
+                kpi_card("Ejec. fisica promedio",
+                         f"{ejec_fis:.1f}%" if total_proyectos else "—"),
+                unsafe_allow_html=True,
+            )
+        with k4:
+            st.markdown(
+                kpi_card("Ejec. financiera promedio",
+                         f"{ejec_fin:.1f}%" if total_proyectos else "—"),
+                unsafe_allow_html=True,
+            )
+
+        if total_proyectos == 0:
+            st.warning("No hay proyectos con los filtros seleccionados.")
+        else:
+            # Flags especiales
+            flag_cols = []
+            for col, label in [
+                ("proyecto_paz", "Proyectos de Paz"),
+                ("proyecto_covid", "Proyectos COVID"),
+            ]:
+                if col in df_proyectos.columns:
+                    count = (df_proyectos[col].astype(str).str.upper() == "SI").sum()
+                    if count > 0:
+                        flag_cols.append((label, count))
+            if "proyecto_grupo_etnico" in df_proyectos.columns:
+                etnico = df_proyectos["proyecto_grupo_etnico"].astype(str)
+                count_etnico = (etnico != "SIN ENFOQUE DIFERENCIAL").sum()
+                if count_etnico > 0:
+                    flag_cols.append(("Enfoque etnico diferencial", count_etnico))
+
+            if flag_cols:
+                st.markdown(
+                    f'<div style="margin-top: 1rem; color: {PALETTE["text_muted"]}; font-size: 0.85rem;">'
+                    + " · ".join([f"<b>{n:,}</b> {lbl}" for lbl, n in flag_cols])
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # Sector donut + estado bar
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.markdown(section_title("Proyectos por sector"), unsafe_allow_html=True)
+                sector_fig = create_proyectos_sector_donut(df_proyectos, top_n=8)
+                if sector_fig:
+                    st.plotly_chart(sector_fig, use_container_width=True)
+            with c2:
+                st.markdown(section_title("Estado"), unsafe_allow_html=True)
+                estado_fig = create_proyectos_estado_chart(df_proyectos)
+                if estado_fig:
+                    st.plotly_chart(estado_fig, use_container_width=True)
+
+            # Top entidades
+            st.markdown(section_title("Top 10 entidades ejecutoras por valor"),
+                        unsafe_allow_html=True)
+            top_ent_fig = create_proyectos_top_entidades_chart(df_proyectos, top_n=10)
+            if top_ent_fig:
+                st.plotly_chart(top_ent_fig, use_container_width=True)
+
+            # Scatter ejecucion
+            st.markdown(section_title("Ejecucion fisica vs financiera"),
+                        unsafe_allow_html=True)
+            exec_fig = create_proyectos_ejecucion_chart(df_proyectos)
+            if exec_fig:
+                st.plotly_chart(exec_fig, use_container_width=True)
+
+            # Tabla
+            st.markdown(section_title("Proyectos"), unsafe_allow_html=True)
+            display_cols = [c for c in [
+                "codigobpin", "nombre", "sector", "estado",
+                "valortotal", "ejecucionfisica", "ejecucionfinanciera",
+                "entidadejecutora", "departamento",
+            ] if c in df_proyectos.columns]
+            df_tabla_p = df_proyectos[display_cols].copy()
+            col_cfg_p = {}
+            if "valortotal" in df_tabla_p.columns:
+                col_cfg_p["valortotal"] = st.column_config.NumberColumn("Valor total", format="dollar")
+            for col, label in [
+                ("ejecucionfisica", "Ejec. fisica"),
+                ("ejecucionfinanciera", "Ejec. financiera"),
+            ]:
+                if col in df_tabla_p.columns:
+                    col_cfg_p[col] = st.column_config.ProgressColumn(
+                        label, format="%.1f%%", min_value=0, max_value=100,
+                    )
+            pretty = {
+                "codigobpin": "BPIN", "nombre": "Proyecto", "sector": "Sector",
+                "estado": "Estado", "entidadejecutora": "Entidad ejecutora",
+                "departamento": "Departamento",
+            }
+            for col, label in pretty.items():
+                if col in df_tabla_p.columns and col not in col_cfg_p:
+                    col_cfg_p[col] = st.column_config.Column(label)
+            st.dataframe(
+                df_tabla_p, use_container_width=True, height=420,
+                column_config=col_cfg_p, hide_index=True,
+            )
+
+            # Descarga
+            from dashboard_sgr.utils import convert_df_to_excel as _to_excel_p
+            excel_p = _to_excel_p(df_proyectos)
+            ts_p = datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label="Descargar proyectos filtrados (Excel)",
+                data=excel_p,
+                file_name=f"SGR_proyectos_{ts_p}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_proyectos",
+            )
+
+        st.caption(f"Total proyectos cargados: {proyectos_rows:,}  ·  "
+                   f"Fuente: datos.gov.co (DNP-ProyectosSGR, dataset mzgh-shtp)")
 
 st.markdown(
     f"""

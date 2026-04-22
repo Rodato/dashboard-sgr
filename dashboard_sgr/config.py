@@ -1,19 +1,13 @@
 # Socrata API
 SOCRATA_DOMAIN = "www.datos.gov.co"
-DATASET_ID = "g4qj-2p2e"
+DATASET_ID = "g4qj-2p2e"          # Asignaciones SGR por entidad / fondo / vigencia
+DATASET_ID_PROYECTOS = "mzgh-shtp"  # DNP-ProyectosSGR: proyectos aprobados a nivel BPIN
 API_ROW_LIMIT = 5000
 API_MAX_RETRIES = 3
 API_RETRY_BACKOFF = 2  # seconds
 
 # Cache
 CACHE_TTL = 3600  # 1 hour in seconds
-
-# Fund types of interest (note: double space before "AMBIENTE" matches source data)
-FONDOS_INTERES = [
-    "ASIGNACIONES DIRECTAS",
-    "ASIGNACION PARA LA INVERSION LOCAL",
-    "ASIGNACION PARA LA INVERSION LOCAL -  AMBIENTE Y DESARROLLO SOSTENIBLE",
-]
 
 # Department name mapping: SGR names -> GeoJSON names.
 # Only irregular cases; tilde/diacritic differences are handled by strip_accents.
@@ -29,6 +23,10 @@ COLUMNS_TO_EXCLUDE = [
     "codigodaneentidad",
     "nombrebolsaregional",
 ]
+
+# Catch-all values used in the source data for unassigned dept/entity rows.
+# Rankings exclude these to avoid swamping real top entries.
+CATCHALL_NAMES = {"OTROS", "SIN UBICACION", "SIN UBICACIÓN"}
 
 # Monetary columns for formatting
 MONETARY_COLUMNS = [

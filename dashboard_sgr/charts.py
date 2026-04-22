@@ -3,8 +3,19 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from dashboard_sgr.config import CATCHALL_NAMES
 from dashboard_sgr.theme import CHART_SCALE_BLUE, CHART_SCALE_WARM, CHART_SEQUENCE, PALETTE
-from dashboard_sgr.utils import aggregate_sgr_data, format_currency
+from dashboard_sgr.utils import aggregate_sgr_data, format_currency, short_fondo_name
+
+
+def _drop_catchall(df, cols):
+    """Drop rows whose values in any of `cols` match a catch-all placeholder
+    (OTROS, SIN UBICACION, etc.)."""
+    mask = pd.Series(True, index=df.index)
+    for col in cols:
+        if col in df.columns:
+            mask &= ~df[col].astype(str).str.upper().str.strip().isin(CATCHALL_NAMES)
+    return df[mask]
 
 
 LAYOUT_DEFAULTS = {
@@ -145,16 +156,41 @@ def create_departamento_distribution_chart(df_filtrado, top_n=10):
         return None
 
 
-def create_fondo_pie_chart(df_filtrado, fondos_interes):
+def create_fondo_pie_chart(df_filtrado, fondos_interes=None, top_n=8):
+    """Donut chart of budget distribution by fund.
+
+    Shows the top_n largest funds individually and groups the rest as "Otros"
+    to stay legible when many small funds exist.
+    """
     try:
+        grouped = (
+            df_filtrado.groupby("nombrefondo", dropna=True)["presupuestosgrinversion"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+        grouped = grouped[grouped > 0]
+        if grouped.empty:
+            return None
+
+        if fondos_interes is not None:
+            grouped = grouped[grouped.index.isin(fondos_interes)]
+            if grouped.empty:
+                return None
+
         pie_data = []
-        for fondo in fondos_interes:
-            datos_fondo = df_filtrado[df_filtrado["nombrefondo"] == fondo]
-            if len(datos_fondo) > 0:
+        if len(grouped) > top_n:
+            top = grouped.head(top_n)
+            otros_sum = grouped.iloc[top_n:].sum()
+            for fondo, val in top.items():
+                pie_data.append({"Fondo": short_fondo_name(fondo), "Presupuesto": val})
+            if otros_sum > 0:
                 pie_data.append({
-                    "Fondo": fondo.replace("ASIGNACION PARA LA INVERSION LOCAL", "INVERSION LOCAL"),
-                    "Presupuesto": datos_fondo["presupuestosgrinversion"].sum(),
+                    "Fondo": f"Otros ({len(grouped) - top_n})",
+                    "Presupuesto": otros_sum,
                 })
+        else:
+            for fondo, val in grouped.items():
+                pie_data.append({"Fondo": short_fondo_name(fondo), "Presupuesto": val})
 
         if not pie_data:
             return None
@@ -225,36 +261,84 @@ def create_kpi_metrics(df_filtrado):
 
 
 def _build_hierarchy_records(df_filtrado):
+    """Build (ids, labels, parents, values, texts, hovers) for a
+    Fondo->Depto->Entidad hierarchy.
+
+    - Entity level is collapsed when its name duplicates the department.
+    - `texts` are pre-formatted labels per tile (label + currency).
+    - `hovers` include a context-specific "X del fondo" / "X del depto" line.
+    """
     tree_data = df_filtrado.groupby(
         ["nombrefondo", "nombredepartamento", "nombreentidad"], dropna=False
     ).agg({"presupuestosgrinversion": "sum"}).reset_index()
 
+    tree_data = tree_data[tree_data["presupuestosgrinversion"] > 0]
     if tree_data.empty:
         return None
 
-    tree_data["fondo_short"] = tree_data["nombrefondo"].str.replace(
-        "ASIGNACION PARA LA INVERSION LOCAL", "INVERSION LOCAL"
-    )
+    ids, labels, parents, values, texts, hovers = [], [], [], [], [], []
 
-    ids, labels, parents, values = [], [], [], []
-    for fondo, grupo in tree_data.groupby("fondo_short", dropna=False):
-        fondo_id = f"F::{fondo}"
-        ids.append(fondo_id); labels.append(fondo); parents.append("")
-        values.append(float(grupo["presupuestosgrinversion"].sum()))
+    for fondo_orig, grupo in tree_data.groupby("nombrefondo", dropna=False):
+        fondo_id = f"F::{fondo_orig}"
+        fondo_label = short_fondo_name(fondo_orig) if pd.notna(fondo_orig) else "(sin fondo)"
+        fondo_total = float(grupo["presupuestosgrinversion"].sum())
+        ids.append(fondo_id); labels.append(fondo_label); parents.append("")
+        values.append(fondo_total)
+        texts.append(f"<b>{fondo_label}</b><br>{format_currency(fondo_total)}")
+        hovers.append(
+            f"<b>{fondo_label}</b><br>Presupuesto: {format_currency(fondo_total)}"
+        )
 
         for depto, dep_grupo in grupo.groupby("nombredepartamento", dropna=False):
             depto_label = depto if pd.notna(depto) else "(sin depto)"
             depto_id = f"{fondo_id}||D::{depto_label}"
+            dep_total = float(dep_grupo["presupuestosgrinversion"].sum())
+            dep_pct = dep_total / fondo_total * 100 if fondo_total else 0
             ids.append(depto_id); labels.append(depto_label); parents.append(fondo_id)
-            values.append(float(dep_grupo["presupuestosgrinversion"].sum()))
+            values.append(dep_total)
+            texts.append(
+                f"<b>{depto_label}</b><br>{format_currency(dep_total)}<br>"
+                f"{dep_pct:.1f}% del fondo"
+            )
+            hovers.append(
+                f"<b>{depto_label}</b><br>"
+                f"Presupuesto: {format_currency(dep_total)}<br>"
+                f"{dep_pct:.2f}% de {fondo_label}"
+            )
+
+            # Collapse entity level when entity name duplicates the department.
+            dep_norm = str(depto_label).upper().strip()
+            distinct_entities = {
+                str(e).upper().strip()
+                for e in dep_grupo["nombreentidad"].dropna()
+            }
+            skip_entity_level = (
+                len(dep_grupo) == 1
+                and distinct_entities == {dep_norm}
+            )
+            if skip_entity_level:
+                continue
 
             for _, row in dep_grupo.iterrows():
                 ent_label = row["nombreentidad"] if pd.notna(row["nombreentidad"]) else "(sin entidad)"
+                if str(ent_label).upper().strip() == dep_norm and len(dep_grupo) == 1:
+                    continue
+                ent_value = float(row["presupuestosgrinversion"])
+                ent_pct = ent_value / dep_total * 100 if dep_total else 0
                 ent_id = f"{depto_id}||E::{ent_label}"
                 ids.append(ent_id); labels.append(ent_label); parents.append(depto_id)
-                values.append(float(row["presupuestosgrinversion"]))
+                values.append(ent_value)
+                texts.append(
+                    f"<b>{ent_label}</b><br>{format_currency(ent_value)}<br>"
+                    f"{ent_pct:.1f}% del depto"
+                )
+                hovers.append(
+                    f"<b>{ent_label}</b><br>"
+                    f"Presupuesto: {format_currency(ent_value)}<br>"
+                    f"{ent_pct:.2f}% de {depto_label}"
+                )
 
-    return ids, labels, parents, values
+    return ids, labels, parents, values, texts, hovers
 
 
 def create_treemap_chart(df_filtrado):
@@ -262,13 +346,18 @@ def create_treemap_chart(df_filtrado):
         records = _build_hierarchy_records(df_filtrado)
         if records is None:
             return None
-        ids, labels, parents, values = records
+        ids, labels, parents, values, texts, hovers = records
         fig = go.Figure(go.Treemap(
             ids=ids, labels=labels, parents=parents, values=values,
             branchvalues="total",
             marker={"colorscale": CHART_SCALE_BLUE,
                     "line": {"color": "#FFFFFF", "width": 1}},
-            hovertemplate="<b>%{label}</b><br>$%{value:,.0f}<extra></extra>",
+            text=texts,
+            texttemplate="%{text}",
+            textposition="middle center",
+            textfont={"size": 12},
+            hovertext=hovers,
+            hoverinfo="text",
             pathbar={"visible": True, "textfont": {"color": PALETTE["text"]}},
         ))
         return _apply_theme(fig, height=560, margin={"t": 40, "l": 10, "r": 10, "b": 10})
@@ -283,13 +372,17 @@ def create_sunburst_chart(df_filtrado):
         records = _build_hierarchy_records(df_filtrado)
         if records is None:
             return None
-        ids, labels, parents, values = records
+        ids, labels, parents, values, texts, hovers = records
         fig = go.Figure(go.Sunburst(
             ids=ids, labels=labels, parents=parents, values=values,
             branchvalues="total",
             marker={"colorscale": CHART_SCALE_BLUE,
                     "line": {"color": "#FFFFFF", "width": 1}},
-            hovertemplate="<b>%{label}</b><br>$%{value:,.0f}<extra></extra>",
+            text=texts,
+            texttemplate="%{text}",
+            insidetextorientation="radial",
+            hovertext=hovers,
+            hoverinfo="text",
         ))
         return _apply_theme(fig, height=560, margin={"t": 40, "l": 10, "r": 10, "b": 10})
 
@@ -305,7 +398,8 @@ def create_presupuesto_vs_saldo_chart(df_filtrado, top_n=10):
     Label lateral: % ejecucion + total.
     """
     try:
-        dept_data = aggregate_sgr_data(df_filtrado, ["nombredepartamento"])
+        df_ranked = _drop_catchall(df_filtrado, ["nombredepartamento"])
+        dept_data = aggregate_sgr_data(df_ranked, ["nombredepartamento"])
         dept_data = dept_data.nlargest(top_n, "presupuestosgrinversion")
 
         if dept_data.empty:
@@ -330,7 +424,14 @@ def create_presupuesto_vs_saldo_chart(df_filtrado, top_n=10):
             orientation="h",
             width=bar_width,
             marker={"color": PALETTE["primary"], "line": {"width": 0}},
-            hovertemplate="<b>%{y}</b><br>Aprobado: $%{x:,.0f}<extra></extra>",
+            customdata=dept_data[["presupuestosgrinversion", "pct_ejecucion"]].values,
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Aprobado: $%{x:,.0f}<br>"
+                "Presupuesto: $%{customdata[0]:,.0f}<br>"
+                "Aprobado/Presupuesto: %{customdata[1]:.1f}%"
+                "<extra></extra>"
+            ),
         ))
         fig.add_trace(go.Bar(
             name="Saldo pendiente",
@@ -340,13 +441,7 @@ def create_presupuesto_vs_saldo_chart(df_filtrado, top_n=10):
             width=bar_width,
             marker={"color": PALETTE["accent"], "line": {"width": 0}},
             hovertemplate="<b>%{y}</b><br>Pendiente: $%{x:,.0f}<extra></extra>",
-            text=[
-                f"  {format_currency(p)} · {pct:.0f}%"
-                for p, pct in zip(
-                    dept_data["presupuestosgrinversion"],
-                    dept_data["pct_ejecucion"],
-                )
-            ],
+            text=[f"  {format_currency(p)}" for p in dept_data["presupuestosgrinversion"]],
             textposition="outside",
             textfont={"size": 11, "color": PALETTE["text_muted"]},
             cliponaxis=False,
@@ -385,7 +480,8 @@ def create_presupuesto_vs_saldo_chart(df_filtrado, top_n=10):
 def create_bottom_ejecucion_chart(df_filtrado, bottom_n=5):
     """Bottom N departamentos por % ejecucion (callout de problema)."""
     try:
-        dept_data = aggregate_sgr_data(df_filtrado, ["nombredepartamento"])
+        df_ranked = _drop_catchall(df_filtrado, ["nombredepartamento"])
+        dept_data = aggregate_sgr_data(df_ranked, ["nombredepartamento"])
         dept_data = dept_data[dept_data["presupuestosgrinversion"] > 0].copy()
         if dept_data.empty:
             return None
@@ -424,15 +520,21 @@ def create_bottom_ejecucion_chart(df_filtrado, bottom_n=5):
 
 def create_saldo_pendiente_chart(df_filtrado, top_n=10):
     try:
-        entidad_data = aggregate_sgr_data(df_filtrado, ["nombreentidad", "nombredepartamento"])
+        df_ranked = _drop_catchall(df_filtrado, ["nombreentidad", "nombredepartamento"])
+        entidad_data = aggregate_sgr_data(df_ranked, ["nombreentidad", "nombredepartamento"])
         entidad_data = entidad_data.nlargest(top_n, "SALDO_PENDIENTE")
 
         if entidad_data.empty or entidad_data["SALDO_PENDIENTE"].sum() == 0:
             return None
 
-        entidad_data["label"] = (
-            entidad_data["nombreentidad"] + " · " + entidad_data["nombredepartamento"]
-        )
+        def _entidad_label(row):
+            ent = str(row["nombreentidad"]).strip()
+            dep = str(row["nombredepartamento"]).strip()
+            if ent.upper() == dep.upper():
+                return ent
+            return f"{ent} · {dep}"
+
+        entidad_data["label"] = entidad_data.apply(_entidad_label, axis=1)
 
         fig = px.bar(
             entidad_data,
@@ -506,4 +608,174 @@ def create_vigencia_chart(df_filtrado):
 
     except Exception as e:
         st.error(f"Error al crear grafico de vigencias: {e}")
+        return None
+
+
+# ============================================================================
+# PROYECTOS (DNP-ProyectosSGR / mzgh-shtp)
+# ============================================================================
+
+ESTADO_COLORS = {
+    "TERMINADO": PALETTE["success"],
+    "EN EJECUCIÓN": PALETTE["primary"],
+    "DESAPROBADO": PALETTE["danger"],
+}
+
+
+def create_proyectos_sector_donut(df_proyectos, top_n=8):
+    """Donut chart: number of projects by sector (top N + Otros)."""
+    try:
+        if df_proyectos.empty or "sector" not in df_proyectos.columns:
+            return None
+        counts = df_proyectos["sector"].value_counts()
+        counts = counts[counts.index.notna() & (counts.index != "")]
+        if counts.empty:
+            return None
+
+        if len(counts) > top_n:
+            top = counts.head(top_n)
+            otros_sum = counts.iloc[top_n:].sum()
+            labels = list(top.index) + [f"Otros ({len(counts) - top_n})"]
+            values = list(top.values) + [int(otros_sum)]
+        else:
+            labels = list(counts.index)
+            values = [int(v) for v in counts.values]
+
+        total = sum(values)
+        fig = go.Figure(go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.55,
+            marker={"colors": CHART_SEQUENCE, "line": {"color": "#FFFFFF", "width": 2}},
+            textposition="outside",
+            textinfo="percent+label",
+            hovertemplate="<b>%{label}</b><br>%{value:,} proyectos<br>%{percent}<extra></extra>",
+        ))
+        return _apply_theme(
+            fig, height=440, showlegend=False,
+            annotations=[{
+                "text": f"<span style='font-size:12px;color:{PALETTE['text_muted']}'>Total</span><br>"
+                        f"<span style='font-size:20px;color:{PALETTE['primary_dark']};font-weight:700'>"
+                        f"{total:,}</span>",
+                "x": 0.5, "y": 0.5, "showarrow": False,
+            }],
+        )
+    except Exception as e:
+        st.error(f"Error al crear donut de sector: {e}")
+        return None
+
+
+def create_proyectos_estado_chart(df_proyectos):
+    """Horizontal bar: project count by estado."""
+    try:
+        if df_proyectos.empty or "estado" not in df_proyectos.columns:
+            return None
+        counts = df_proyectos["estado"].value_counts()
+        if counts.empty:
+            return None
+        order = ["TERMINADO", "EN EJECUCIÓN", "DESAPROBADO"]
+        counts = counts.reindex([e for e in order if e in counts.index] +
+                                [e for e in counts.index if e not in order])
+        colors = [ESTADO_COLORS.get(e, PALETTE["neutral"]) for e in counts.index]
+
+        fig = go.Figure(go.Bar(
+            x=counts.values,
+            y=counts.index,
+            orientation="h",
+            marker={"color": colors, "line": {"width": 0}},
+            text=[f"{v:,}" for v in counts.values],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>%{x:,} proyectos<extra></extra>",
+        ))
+        return _apply_theme(
+            fig, height=240, showlegend=False,
+            xaxis={"gridcolor": PALETTE["border"], "zeroline": False,
+                   "range": [0, counts.values.max() * 1.18]},
+            yaxis={"gridcolor": "rgba(0,0,0,0)"},
+            margin={"t": 20, "l": 20, "r": 60, "b": 30},
+        )
+    except Exception as e:
+        st.error(f"Error al crear chart de estado: {e}")
+        return None
+
+
+def create_proyectos_top_entidades_chart(df_proyectos, top_n=10):
+    """Top N entidades ejecutoras by total project value."""
+    try:
+        if df_proyectos.empty or "entidadejecutora" not in df_proyectos.columns:
+            return None
+        agg = (
+            df_proyectos.groupby("entidadejecutora", dropna=True)["valortotal"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+        agg = agg[agg > 0].head(top_n).sort_values(ascending=True)
+        if agg.empty:
+            return None
+
+        fig = go.Figure(go.Bar(
+            x=agg.values,
+            y=agg.index,
+            orientation="h",
+            marker={"color": PALETTE["primary"], "line": {"width": 0}},
+            text=[format_currency(v) for v in agg.values],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>Valor total: $%{x:,.0f}<extra></extra>",
+        ))
+        tickvals, ticktext = _currency_ticks(float(agg.max()))
+        return _apply_theme(
+            fig,
+            height=max(320, 38 * len(agg) + 80),
+            showlegend=False,
+            xaxis={"tickmode": "array", "tickvals": tickvals, "ticktext": ticktext,
+                   "gridcolor": PALETTE["border"], "zeroline": False,
+                   "range": [0, float(agg.max()) * 1.2]},
+            yaxis={"gridcolor": "rgba(0,0,0,0)", "automargin": True},
+            margin={"t": 20, "l": 20, "r": 40, "b": 40},
+        )
+    except Exception as e:
+        st.error(f"Error al crear top entidades de proyectos: {e}")
+        return None
+
+
+def create_proyectos_ejecucion_chart(df_proyectos):
+    """Scatter of physical vs financial execution, colored by estado."""
+    try:
+        if df_proyectos.empty:
+            return None
+        sub = df_proyectos.dropna(subset=["ejecucionfisica", "ejecucionfinanciera"])
+        if sub.empty:
+            return None
+        fig = go.Figure()
+        for estado, color in ESTADO_COLORS.items():
+            part = sub[sub["estado"] == estado]
+            if part.empty:
+                continue
+            fig.add_trace(go.Scatter(
+                x=part["ejecucionfisica"],
+                y=part["ejecucionfinanciera"],
+                mode="markers",
+                name=estado,
+                marker={"color": color, "size": 6, "opacity": 0.55,
+                        "line": {"width": 0}},
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Fisica: %{x:.0f}%  ·  Financiera: %{y:.0f}%"
+                    "<extra></extra>"
+                ),
+                customdata=part[["nombre"]].values if "nombre" in part.columns else None,
+            ))
+        return _apply_theme(
+            fig, height=400,
+            xaxis={"title": "Ejecucion fisica (%)", "range": [0, 105],
+                   "gridcolor": PALETTE["border"]},
+            yaxis={"title": "Ejecucion financiera (%)", "range": [0, 105],
+                   "gridcolor": PALETTE["border"]},
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
+                    "xanchor": "right", "x": 1, "bgcolor": "rgba(0,0,0,0)"},
+        )
+    except Exception as e:
+        st.error(f"Error al crear scatter de ejecucion: {e}")
         return None
