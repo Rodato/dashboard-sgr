@@ -13,19 +13,13 @@ from dashboard_sgr.config import (
     API_ROW_LIMIT,
     CACHE_TTL,
     DATASET_ID,
+    DATASET_ID_PROYECTOS,
     DEPT_NAME_MAPPING,
-    FONDOS_INTERES,
     GEOJSON_LOCAL_PATH,
     GEOJSON_URL,
     SOCRATA_DOMAIN,
 )
 from dashboard_sgr.utils import aggregate_sgr_data, normalize_color_intensity, strip_accents
-
-
-def _build_fondos_where_clause(fondos):
-    escaped = [f.replace("'", "''") for f in fondos]
-    quoted = ", ".join(f"'{f}'" for f in escaped)
-    return f"nombrefondo in ({quoted})"
 
 
 @st.cache_data(ttl=CACHE_TTL)
@@ -36,12 +30,10 @@ def load_data():
             client = Socrata(SOCRATA_DOMAIN, None)
             all_results = []
             offset = 0
-            where_clause = _build_fondos_where_clause(FONDOS_INTERES)
 
             while True:
                 batch = client.get(
                     DATASET_ID,
-                    where=where_clause,
                     limit=API_ROW_LIMIT,
                     offset=offset,
                 )
@@ -221,3 +213,50 @@ def prepare_choropleth_data(df_filtrado):
     except Exception as e:
         st.warning(f"Error al preparar datos coropleticos: {e}")
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def load_proyectos():
+    """Fetch DNP-ProyectosSGR (mzgh-shtp) from Socrata with pagination + retry.
+
+    Returns (DataFrame, rows_fetched). Numeric columns are coerced.
+    """
+    for attempt in range(1, API_MAX_RETRIES + 1):
+        try:
+            client = Socrata(SOCRATA_DOMAIN, None)
+            all_results = []
+            offset = 0
+            while True:
+                batch = client.get(
+                    DATASET_ID_PROYECTOS, limit=API_ROW_LIMIT, offset=offset,
+                )
+                if not batch:
+                    break
+                all_results.extend(batch)
+                if len(batch) < API_ROW_LIMIT:
+                    break
+                offset += API_ROW_LIMIT
+
+            df = pd.DataFrame.from_records(all_results)
+            rows_fetched = len(df)
+
+            if df.empty:
+                return df, 0
+
+            numeric_cols = ["valortotal", "ejecucionfisica", "ejecucionfinanciera"]
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            for col in ["sector", "estado", "departamento", "entidadejecutora"]:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip()
+
+            return df, rows_fetched
+
+        except Exception as e:
+            if attempt < API_MAX_RETRIES:
+                time.sleep(API_RETRY_BACKOFF * attempt)
+            else:
+                st.error(f"Error al cargar proyectos tras {API_MAX_RETRIES} intentos: {e}")
+                return pd.DataFrame(), 0
