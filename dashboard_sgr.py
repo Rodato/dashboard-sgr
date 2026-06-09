@@ -17,7 +17,7 @@ from dashboard_sgr.charts import (
     create_entidad_ranking_chart,
     create_fondo_pie_chart,
     create_giros_dept_chart,
-    create_giros_funnel,
+    create_giros_flujo_chart,
     create_presupuesto_vs_saldo_chart,
     create_proyectos_ejecucion_chart,
     create_proyectos_estado_chart,
@@ -285,9 +285,10 @@ else:
 
 
 def _filter_giros_by_side(df):
-    """Apply the sidebar fondo/departamento/búsqueda filters to a giros frame.
-    Giros shares g4qj's fondo/depto naming so these match directly; the exact
-    entidad multiselect is skipped (giros suffixes entity names, e.g. '(CES)')."""
+    """Apply the sidebar fondo / departamento / entidad / búsqueda filters to a
+    giros frame. Giros shares g4qj's exact naming (entity names match byte-for-byte
+    — suffix and all, verified 100% overlap), so .isin matches across both datasets
+    and the entidad filter stays consistent with the rest of the dashboard."""
     if df is None:
         return None
     out = df
@@ -295,6 +296,8 @@ def _filter_giros_by_side(df):
         out = out[out["nombrefondo"].isin(filtro_fondos)]
     if filtro_departamentos:
         out = out[out["nombredepartamento"].isin(filtro_departamentos)]
+    if filtro_entidades:
+        out = out[out["nombreentidad"].isin(filtro_entidades)]
     if busqueda_texto:
         out = out[out["nombreentidad"].str.contains(busqueda_texto, case=False, na=False)]
     return out.copy()
@@ -427,18 +430,23 @@ with tab_flujo:
             f"Quedan {format_currency_md(caja)} en caja sin ejecutar."
         )
 
-        # Funnel: presupuesto -> recaudo -> aprobado -> pagado
-        st.markdown(section_title("Del presupuesto al pago"), unsafe_allow_html=True)
+        # Magnitudes (NOT a funnel): aprobado is accumulated/cross-vigency and can
+        # exceed recaudo, so independent bars are honest and filter-robust.
+        st.markdown(section_title("Presupuesto, recaudo, aprobado y pago"),
+                    unsafe_allow_html=True)
         st.caption(
-            "Cada etapa es el monto efectivo; el porcentaje es respecto al presupuesto. "
-            "El salto Aprobado → Pagado es el cuello de botella del desembolso."
+            "Magnitudes comparadas (el % es respecto al presupuesto). **No es una "
+            "cascada estricta**: el *aprobado* es acumulado e incluye compromisos de "
+            "vigencias anteriores, por lo que puede superar al recaudo y no es un "
+            f"subconjunto de él. La señal sólida: de lo recaudado, **solo el "
+            f"{pct_pagado:.0f}%** se ha pagado."
         )
-        funnel = create_giros_funnel([
+        flujo_fig = create_giros_flujo_chart([
             ("Presupuesto", presupuesto_g), ("Recaudo", recaudo),
             ("Aprobado", aprobado_g), ("Pagado", pagado),
         ])
-        if funnel:
-            st.plotly_chart(funnel, width="stretch")
+        if flujo_fig:
+            st.plotly_chart(flujo_fig, width="stretch")
 
         # Honest note: how much of the idle cash sits in national OTROS bolsas.
         cat_g = (df_giros["nombredepartamento"].astype(str).str.upper().str.strip()
@@ -454,8 +462,9 @@ with tab_flujo:
         # Where is the cash stuck — by department.
         st.markdown(section_title("¿Dónde está la plata en caja?"), unsafe_allow_html=True)
         st.caption(
-            "Top departamentos por saldo en caja: cuánto han pagado (azul) frente a cuánto "
-            "sigue sin ejecutar (ámbar)."
+            "Top departamentos por saldo en caja: lo **pagado** (azul) y lo que sigue "
+            "**en caja** (ámbar), lado a lado. Son cifras reportadas por separado — el "
+            "saldo en caja no es exactamente recaudo menos pagado."
         )
         dept_fig = create_giros_dept_chart(df_giros, top_n=10)
         if dept_fig:
