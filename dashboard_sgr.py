@@ -3,6 +3,7 @@ import streamlit as st
 from datetime import datetime
 
 from dashboard_sgr.config import (
+    CATCHALL_NAMES,
     COLUMN_LABELS,
     COLUMNS_TO_EXCLUDE,
     ESTADO_EN_EJECUCION,
@@ -36,7 +37,12 @@ from dashboard_sgr.analytics import (
     zombies_by_year,
 )
 from dashboard_sgr.theme import CUSTOM_CSS, PALETTE, kpi_card, section_title
-from dashboard_sgr.utils import convert_df_to_excel, format_currency, norm_dept
+from dashboard_sgr.utils import (
+    convert_df_to_excel,
+    format_currency,
+    format_currency_md,
+    norm_dept,
+)
 
 # --- Page config ---
 st.set_page_config(
@@ -97,6 +103,19 @@ def _labeled(base, key, default, singular, plural):
     return f"{base} ({n} {word})"
 
 
+def _clear_filters():
+    """Reset every sidebar/proyectos filter and the shareable URL params.
+
+    Used by the "Limpiar filtros" buttons (sidebar + empty-state). Runs as an
+    on_click callback, before widgets re-instantiate, so popping the widget keys
+    is safe and Streamlit reruns automatically afterwards.
+    """
+    for k in ("flt_fondos", "flt_deptos", "flt_entidades", "flt_vigencias",
+              "flt_sectores", "flt_estados", "det_fondo_sel"):
+        st.session_state.pop(k, None)
+    st.query_params.clear()
+
+
 # Fund filter
 fondos_disponibles = sorted(df_base["nombrefondo"].unique().tolist())
 default_fondos = [f for f in _qp_list("f") if f in fondos_disponibles]
@@ -135,8 +154,11 @@ filtro_entidades = st.sidebar.multiselect(
     entidades_disponibles, key="flt_entidades",
 )
 
-# Vigencia filter
-if "vigencia" in df_base.columns:
+# Vigencia filter — only shown when the data actually spans more than one
+# vigencia. The live dataset is a single vigencia ("2025 - 2026"), so the control
+# is dead weight; this guard hides it now yet revives it automatically if the
+# source ever gains vigencias.
+if "vigencia" in df_base.columns and df_base["vigencia"].nunique() > 1:
     vigencias_disponibles = sorted(df_base["vigencia"].unique().tolist())
     vig_strs = {str(v): v for v in vigencias_disponibles}
     default_vigencias = [vig_strs[v] for v in _qp_list("v") if v in vig_strs]
@@ -158,6 +180,8 @@ with st.sidebar:
     if st.button("Actualizar datos", use_container_width=True):
         load_data.clear()
         st.rerun()
+    st.button("Limpiar filtros", use_container_width=True,
+              on_click=_clear_filters, key="clear_sidebar")
 
 # Sync URL query params
 new_qp = {}
@@ -201,7 +225,7 @@ st.markdown(
             </div>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
                 <span class="dsgr-pill">{len(df_filtrado):,} registros</span>
-                <span class="dsgr-pill">Actualizado: {datetime.now().strftime('%Y-%m-%d %H:%M')}</span>
+                <span class="dsgr-pill">Consultado: {datetime.now().strftime('%Y-%m-%d %H:%M')}</span>
             </div>
         </div>
     </div>
@@ -210,8 +234,12 @@ st.markdown(
 )
 
 if len(df_filtrado) == 0:
-    st.warning("No se encontraron datos con los filtros seleccionados. Ajusta los filtros en la barra lateral.")
-    st.stop()
+    st.warning(
+        "Ningún registro coincide con los filtros actuales. Las vistas de asignaciones "
+        "(Resumen, Territorio, Detalles) aparecerán vacías; la pestaña Proyectos sigue "
+        "disponible. Ajusta o limpia los filtros en la barra lateral."
+    )
+    st.button("Limpiar filtros", on_click=_clear_filters, key="clear_inline")
 
 # --- Load proyectos once (shared by Territorio + Proyectos tabs) ---
 # st.tabs renders every tab body each rerun, so proyectos loads regardless of
@@ -268,6 +296,23 @@ with tab_resumen:
     with c4:
         st.markdown(kpi_card("% Ejecucion", f"{pct_ejecucion:.1f}%"),
                     unsafe_allow_html=True)
+
+    # Honest reconciliation: the headline KPIs sum the full frame, but every
+    # territorial ranking below drops the OTROS / sin-ubicación catch-all bolsas
+    # (~44% of the budget). Make that gap explicit so the numbers reconcile.
+    _catchall_mask = (
+        df_filtrado["nombredepartamento"].astype(str).str.upper().str.strip()
+        .isin(CATCHALL_NAMES)
+    )
+    terr_pres = df_filtrado.loc[~_catchall_mask, "presupuestosgrinversion"].sum()
+    oculto = presupuesto_total - terr_pres
+    if oculto > 0 and presupuesto_total > 0:
+        st.caption(
+            f"Del presupuesto total, **{format_currency_md(terr_pres)}** está "
+            f"territorializado (con departamento asignado). Los **{format_currency_md(oculto)}** "
+            f"restantes ({oculto / presupuesto_total * 100:.0f}%) están en bolsas "
+            f"OTROS / sin ubicación y no aparecen en los rankings por departamento."
+        )
 
     # Hero chart: presupuesto apilado por departamento
     st.markdown(section_title("Presupuesto y saldo pendiente por departamento"),
@@ -377,10 +422,10 @@ with tab_territorio:
             n_excl = excl_proy["codigobpin"].nunique()
             v_excl = excl_proy.drop_duplicates("codigobpin")["valortotal"].sum()
             st.caption(
-                f"Territorializa **{format_currency(terr_pto)}** de {format_currency(total_pto)} del "
+                f"Territorializa **{format_currency_md(terr_pto)}** de {format_currency_md(total_pto)} del "
                 f"presupuesto ({pct_excl:.0f}% queda en bolsas no territorializables: OTROS / corporaciones "
                 f"/ sin ubicación). Del lado de proyectos se excluyen {n_excl:,} sin departamento "
-                f"identificable ({format_currency(v_excl)}); sí cuentan en la pestaña Proyectos."
+                f"identificable ({format_currency_md(v_excl)}); sí cuentan en la pestaña Proyectos."
             )
 
             # --- Hero: money-in vs delivery ---
@@ -455,7 +500,7 @@ with tab_territorio:
             else:
                 st.caption(
                     f"**{len(pa):,}** proyectos en ejecución con la financiera más de {GAP_PP} pp por encima "
-                    f"de la física ({format_currency(pa['valortotal'].sum())} en valor total de los proyectos "
+                    f"de la física ({format_currency_md(pa['valortotal'].sum())} en valor total de los proyectos "
                     f"señalados) — candidatos prioritarios de auditoría. Top 20 por valor:"
                 )
                 pa_cols = [c for c in [
@@ -487,7 +532,7 @@ with tab_territorio:
             else:
                 st.caption(
                     f"**{len(zb):,}** proyectos formulados antes de {ZOMBIE_YEAR} siguen *en ejecución* "
-                    f"({format_currency(zb['valortotal'].sum())} comprometidos que no terminan de aterrizar)."
+                    f"({format_currency_md(zb['valortotal'].sum())} comprometidos que no terminan de aterrizar)."
                 )
                 zby = zombies_by_year(df_proy_side, before_year=ZOMBIE_YEAR, z=zb)
                 zfig = create_zombie_year_chart(zby)
@@ -518,7 +563,12 @@ with tab_detalles:
     # --- Resumen por fondo (un fondo a la vez para evitar saturacion) ---
     st.markdown(section_title("Resumen por tipo de fondo"), unsafe_allow_html=True)
     fondos_con_datos = sorted(df_filtrado["nombrefondo"].dropna().unique().tolist())
-    if fondos_con_datos:
+    if not fondos_con_datos:
+        st.info(
+            "No hay datos en ningún fondo con los filtros actuales. "
+            "Ajusta o limpia los filtros en la barra lateral."
+        )
+    else:
         fondo_sel = st.selectbox(
             "Ver fondo:", fondos_con_datos, key="det_fondo_sel",
             label_visibility="collapsed",
@@ -547,90 +597,87 @@ with tab_detalles:
                 kpi_card("Pendiente", format_currency(datos_fondo["SALDO_PENDIENTE"].sum())),
                 unsafe_allow_html=True,
             )
-    else:
-        st.info("No hay datos en ningun fondo con los filtros actuales.")
-        st.stop()
 
-    # --- Top entidades por saldo pendiente (scoped al fondo seleccionado) ---
-    r1, r2 = st.columns([3, 1])
-    with r1:
-        st.markdown(section_title(f"Entidades con mayor saldo pendiente · {fondo_sel}"),
-                    unsafe_allow_html=True)
-    with r2:
-        top_n = st.selectbox(
-            "Mostrar:", [5, 10, 15, 20], index=1,
-            format_func=lambda n: f"Top {n}",
-            label_visibility="collapsed",
+        # --- Top entidades por saldo pendiente (scoped al fondo seleccionado) ---
+        r1, r2 = st.columns([3, 1])
+        with r1:
+            st.markdown(section_title(f"Entidades con mayor saldo pendiente · {fondo_sel}"),
+                        unsafe_allow_html=True)
+        with r2:
+            top_n = st.selectbox(
+                "Mostrar:", [5, 10, 15, 20], index=1,
+                format_func=lambda n: f"Top {n}",
+                label_visibility="collapsed",
+            )
+        saldo_fig = create_saldo_pendiente_chart(datos_fondo, top_n=top_n)
+        if saldo_fig:
+            st.plotly_chart(saldo_fig, use_container_width=True)
+
+        # Jerarquico: filtrado por fondo seleccionado
+        h1, h2 = st.columns([3, 1])
+        with h1:
+            st.markdown(section_title(f"Distribucion jerarquica · {fondo_sel}"),
+                        unsafe_allow_html=True)
+        with h2:
+            hierarchy_view = st.radio(
+                "Vista:", ["Treemap", "Sunburst"],
+                horizontal=True, label_visibility="collapsed",
+            )
+        if hierarchy_view == "Treemap":
+            hierarchy_fig = create_treemap_chart(datos_fondo)
+        else:
+            hierarchy_fig = create_sunburst_chart(datos_fondo)
+        if hierarchy_fig:
+            st.plotly_chart(hierarchy_fig, use_container_width=True)
+
+        # Vigencia (solo si hay mas de una)
+        vigencia_fig = create_vigencia_chart(df_filtrado)
+        if vigencia_fig:
+            st.markdown(section_title("Presupuesto por vigencia"), unsafe_allow_html=True)
+            st.plotly_chart(vigencia_fig, use_container_width=True)
+
+        # --- Tabla: filtrada por fondo seleccionado ---
+        st.markdown(section_title(f"Tabla de datos · {fondo_sel}"), unsafe_allow_html=True)
+        df_tabla = datos_fondo.drop(
+            columns=[c for c in COLUMNS_TO_EXCLUDE if c in datos_fondo.columns]
         )
-    saldo_fig = create_saldo_pendiente_chart(datos_fondo, top_n=top_n)
-    if saldo_fig:
-        st.plotly_chart(saldo_fig, use_container_width=True)
-
-    # Jerarquico: filtrado por fondo seleccionado
-    h1, h2 = st.columns([3, 1])
-    with h1:
-        st.markdown(section_title(f"Distribucion jerarquica · {fondo_sel}"),
-                    unsafe_allow_html=True)
-    with h2:
-        hierarchy_view = st.radio(
-            "Vista:", ["Treemap", "Sunburst"],
-            horizontal=True, label_visibility="collapsed",
+        column_config = {
+            col: st.column_config.NumberColumn(COLUMN_LABELS.get(col, col), format="dollar")
+            for col in MONETARY_COLUMNS
+            if col in df_tabla.columns
+        }
+        for col in df_tabla.columns:
+            if col not in column_config and col in COLUMN_LABELS:
+                column_config[col] = st.column_config.Column(COLUMN_LABELS[col])
+        st.dataframe(
+            df_tabla, use_container_width=True, height=420, column_config=column_config,
+            hide_index=True,
         )
-    if hierarchy_view == "Treemap":
-        hierarchy_fig = create_treemap_chart(datos_fondo)
-    else:
-        hierarchy_fig = create_sunburst_chart(datos_fondo)
-    if hierarchy_fig:
-        st.plotly_chart(hierarchy_fig, use_container_width=True)
 
-    # Vigencia (solo si hay mas de una)
-    vigencia_fig = create_vigencia_chart(df_filtrado)
-    if vigencia_fig:
-        st.markdown(section_title("Presupuesto por vigencia"), unsafe_allow_html=True)
-        st.plotly_chart(vigencia_fig, use_container_width=True)
-
-    # --- Tabla: filtrada por fondo seleccionado ---
-    st.markdown(section_title(f"Tabla de datos · {fondo_sel}"), unsafe_allow_html=True)
-    df_tabla = datos_fondo.drop(
-        columns=[c for c in COLUMNS_TO_EXCLUDE if c in datos_fondo.columns]
-    )
-    column_config = {
-        col: st.column_config.NumberColumn(COLUMN_LABELS.get(col, col), format="dollar")
-        for col in MONETARY_COLUMNS
-        if col in df_tabla.columns
-    }
-    for col in df_tabla.columns:
-        if col not in column_config and col in COLUMN_LABELS:
-            column_config[col] = st.column_config.Column(COLUMN_LABELS[col])
-    st.dataframe(
-        df_tabla, use_container_width=True, height=420, column_config=column_config,
-        hide_index=True,
-    )
-
-    # Download del fondo seleccionado
-    excel_data_2 = convert_df_to_excel(datos_fondo)
-    timestamp_2 = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fondo_slug = fondo_sel.replace(" ", "_").replace("-", "").replace("__", "_")[:40]
-    st.download_button(
-        label=f"Descargar {fondo_sel} (Excel)",
-        data=excel_data_2,
-        file_name=f"SGR_{fondo_slug}_{timestamp_2}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dl_tab2",
-    )
-
-    with st.expander("Glosario de columnas"):
-        glosario = pd.DataFrame(
-            [
-                {"Columna": col, "Descripcion": COLUMN_LABELS.get(col, col)}
-                for col in df_filtrado.columns
-            ]
+        # Download del fondo seleccionado
+        excel_data_2 = convert_df_to_excel(datos_fondo)
+        timestamp_2 = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fondo_slug = fondo_sel.replace(" ", "_").replace("-", "").replace("__", "_")[:40]
+        st.download_button(
+            label=f"Descargar {fondo_sel} (Excel)",
+            data=excel_data_2,
+            file_name=f"SGR_{fondo_slug}_{timestamp_2}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_tab2",
         )
-        st.dataframe(glosario, hide_index=True, use_container_width=True)
-        st.caption(
-            f"Total filas cargadas: {rows_fetched:,}  ·  "
-            f"Fuente: datos.gov.co (Sistema General de Regalias)"
-        )
+
+        with st.expander("Glosario de columnas"):
+            glosario = pd.DataFrame(
+                [
+                    {"Columna": col, "Descripcion": COLUMN_LABELS.get(col, col)}
+                    for col in df_filtrado.columns
+                ]
+            )
+            st.dataframe(glosario, hide_index=True, use_container_width=True)
+            st.caption(
+                f"Total filas cargadas: {rows_fetched:,}  ·  "
+                f"Fuente: datos.gov.co (Sistema General de Regalias)"
+            )
 
 # ===== TAB 3: PROYECTOS =====
 with tab_proyectos:
@@ -764,8 +811,11 @@ with tab_proyectos:
                 ("ejecucionfinanciera", "Ejec. financiera"),
             ]:
                 if col in df_tabla_p.columns:
-                    col_cfg_p[col] = st.column_config.ProgressColumn(
-                        label, format="%.1f%%", min_value=0, max_value=100,
+                    # NumberColumn (not ProgressColumn) so executions >100% read
+                    # literally instead of being silently clamped to a full bar —
+                    # the >100% cases are exactly the audit signal worth seeing.
+                    col_cfg_p[col] = st.column_config.NumberColumn(
+                        label, format="%.1f%%",
                     )
             pretty = {
                 "codigobpin": "BPIN", "nombre": "Proyecto", "sector": "Sector",

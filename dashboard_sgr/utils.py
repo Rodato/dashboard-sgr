@@ -78,6 +78,17 @@ def format_currency(value):
     return f"{sign}${abs_val:,.0f}"
 
 
+def format_currency_md(value):
+    """``format_currency`` for Markdown text (st.caption / st.markdown).
+
+    Escapes the ``$`` so Streamlit's KaTeX does not read ``$…$`` as inline math —
+    two dollar amounts in one string otherwise turn the text between them into
+    italic math. Use this in Markdown contexts; keep ``format_currency`` for HTML
+    KPI cards and Plotly chart text, where ``$`` must stay literal.
+    """
+    return format_currency(value).replace("$", "\\$")
+
+
 def aggregate_sgr_data(df, group_cols):
     """Aggregate SGR data by given columns with standard monetary sums."""
     return df.groupby(group_cols).agg({

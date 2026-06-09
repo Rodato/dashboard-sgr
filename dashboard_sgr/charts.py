@@ -621,6 +621,14 @@ ESTADO_COLORS = {
     "DESAPROBADO": PALETTE["danger"],
 }
 
+# Distinct marker shapes per estado: a redundant (colorblind-safe) encoding so
+# the execution scatter is readable without relying on color alone.
+ESTADO_SYMBOLS = {
+    "TERMINADO": "circle",
+    "EN EJECUCIÓN": "diamond",
+    "DESAPROBADO": "x",
+}
+
 
 def create_proyectos_sector_donut(df_proyectos, top_n=8):
     """Donut chart: number of projects by sector (top N + Otros)."""
@@ -758,7 +766,8 @@ def create_proyectos_ejecucion_chart(df_proyectos):
                 y=part["ejecucionfinanciera"],
                 mode="markers",
                 name=estado,
-                marker={"color": color, "size": 6, "opacity": 0.55,
+                marker={"color": color, "size": 7, "opacity": 0.55,
+                        "symbol": ESTADO_SYMBOLS.get(estado, "circle"),
                         "line": {"width": 0}},
                 hovertemplate=(
                     "<b>%{customdata[0]}</b><br>"
@@ -767,11 +776,20 @@ def create_proyectos_ejecucion_chart(df_proyectos):
                 ),
                 customdata=part[["nombre"]].values if "nombre" in part.columns else None,
             ))
+        # Autoscale the top so executions >100% stay visible (the data has ~200
+        # projects with financiera >100%); only pin the floor at 0. The dotted
+        # diagonal is física=financiera — points above it are "paying ahead".
+        hi = float(max(sub["ejecucionfisica"].max(),
+                       sub["ejecucionfinanciera"].max(), 100.0))
         return _apply_theme(
             fig, height=400,
-            xaxis={"title": "Ejecucion fisica (%)", "range": [0, 105],
+            shapes=[{
+                "type": "line", "x0": 0, "y0": 0, "x1": hi, "y1": hi,
+                "line": {"color": PALETTE["border"], "width": 1, "dash": "dot"},
+            }],
+            xaxis={"title": "Ejecucion fisica (%)", "rangemode": "tozero",
                    "gridcolor": PALETTE["border"]},
-            yaxis={"title": "Ejecucion financiera (%)", "range": [0, 105],
+            yaxis={"title": "Ejecucion financiera (%)", "rangemode": "tozero",
                    "gridcolor": PALETTE["border"]},
             legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
                     "xanchor": "right", "x": 1, "bgcolor": "rgba(0,0,0,0)"},
