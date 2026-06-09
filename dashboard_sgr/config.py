@@ -2,6 +2,7 @@
 SOCRATA_DOMAIN = "www.datos.gov.co"
 DATASET_ID = "g4qj-2p2e"          # Asignaciones SGR por entidad / fondo / vigencia
 DATASET_ID_PROYECTOS = "mzgh-shtp"  # DNP-ProyectosSGR: proyectos aprobados a nivel BPIN
+DATASET_ID_GIROS = "e624-d9uy"      # Giros/pagos SGR: recaudo, pagado, saldo en caja (mismo grano que DATASET_ID)
 API_ROW_LIMIT = 5000
 API_MAX_RETRIES = 3
 API_RETRY_BACKOFF = 2  # seconds

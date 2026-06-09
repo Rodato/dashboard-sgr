@@ -9,13 +9,15 @@ from dashboard_sgr.config import (
     ESTADO_EN_EJECUCION,
     MONETARY_COLUMNS,
 )
-from dashboard_sgr.data import load_data, load_proyectos
+from dashboard_sgr.data import load_data, load_giros, load_proyectos
 from dashboard_sgr.charts import (
     create_benchmark_chart,
     create_bottom_ejecucion_chart,
     create_desaprobado_chart,
     create_entidad_ranking_chart,
     create_fondo_pie_chart,
+    create_giros_dept_chart,
+    create_giros_funnel,
     create_presupuesto_vs_saldo_chart,
     create_proyectos_ejecucion_chart,
     create_proyectos_estado_chart,
@@ -272,8 +274,36 @@ if filtro_departamentos and df_proy_side is not None and len(df_proy_side) == 0 
         and df_proyectos_full is not None and not df_proyectos_full.empty:
     st.info("Los departamentos seleccionados no tienen proyectos en el dataset de proyectos.")
 
-tab_resumen, tab_territorio, tab_detalles, tab_proyectos = st.tabs(
-    ["Resumen", "Territorio", "Detalles", "Proyectos"]
+# --- Load giros/pagos once (shared by the Flujo de caja tab) ---
+with st.spinner("Cargando giros y pagos SGR..."):
+    giros_result = load_giros()
+
+if giros_result is not None and not giros_result[0].empty:
+    df_giros_full, giros_rows = giros_result
+else:
+    df_giros_full, giros_rows = None, 0
+
+
+def _filter_giros_by_side(df):
+    """Apply the sidebar fondo/departamento/búsqueda filters to a giros frame.
+    Giros shares g4qj's fondo/depto naming so these match directly; the exact
+    entidad multiselect is skipped (giros suffixes entity names, e.g. '(CES)')."""
+    if df is None:
+        return None
+    out = df
+    if filtro_fondos:
+        out = out[out["nombrefondo"].isin(filtro_fondos)]
+    if filtro_departamentos:
+        out = out[out["nombredepartamento"].isin(filtro_departamentos)]
+    if busqueda_texto:
+        out = out[out["nombreentidad"].str.contains(busqueda_texto, case=False, na=False)]
+    return out.copy()
+
+
+df_giros = _filter_giros_by_side(df_giros_full)
+
+tab_resumen, tab_flujo, tab_territorio, tab_detalles, tab_proyectos = st.tabs(
+    ["Resumen", "Flujo de caja", "Territorio", "Detalles", "Proyectos"]
 )
 
 # ===== TAB 1: RESUMEN EJECUTIVO =====
@@ -363,6 +393,91 @@ with tab_resumen:
             f'</div>',
             unsafe_allow_html=True,
         )
+
+# ===== TAB: FLUJO DE CAJA (giros/pagos e624-d9uy) =====
+with tab_flujo:
+    st.caption(
+        "Fuente: giros y pagos SGR (dataset `e624-d9uy`), misma vigencia 2025-26 y mismo "
+        "grano (fondo / departamento / entidad) que las asignaciones — el presupuesto "
+        "reconcilia con el Resumen. Muestra el **desembolso real**: del presupuesto, cuánto "
+        "se recaudó, cuánto se aprobó y cuánto efectivamente se **pagó**; el resto queda en caja."
+    )
+    if df_giros is None or df_giros.empty:
+        st.warning("No hay datos de giros y pagos con los filtros actuales.")
+    else:
+        presupuesto_g = df_giros["presupuestosgrinversion"].sum()
+        recaudo = df_giros["valorrecaudo"].sum()
+        aprobado_g = df_giros["recursosaprobadosasignadosspgr"].sum()
+        pagado = df_giros["totalpagado"].sum()
+        caja = df_giros["saldocaja"].sum()
+        pct_pagado = (pagado / recaudo * 100) if recaudo > 0 else 0
+
+        g1, g2, g3, g4 = st.columns(4)
+        with g1:
+            st.markdown(kpi_card("Recaudo", format_currency(recaudo)), unsafe_allow_html=True)
+        with g2:
+            st.markdown(kpi_card("Aprobado", format_currency(aprobado_g)), unsafe_allow_html=True)
+        with g3:
+            st.markdown(kpi_card("Pagado", format_currency(pagado)), unsafe_allow_html=True)
+        with g4:
+            st.markdown(kpi_card("Saldo en caja", format_currency(caja)), unsafe_allow_html=True)
+
+        st.caption(
+            f"**Solo el {pct_pagado:.0f}% de lo recaudado se ha pagado.** "
+            f"Quedan {format_currency_md(caja)} en caja sin ejecutar."
+        )
+
+        # Funnel: presupuesto -> recaudo -> aprobado -> pagado
+        st.markdown(section_title("Del presupuesto al pago"), unsafe_allow_html=True)
+        st.caption(
+            "Cada etapa es el monto efectivo; el porcentaje es respecto al presupuesto. "
+            "El salto Aprobado → Pagado es el cuello de botella del desembolso."
+        )
+        funnel = create_giros_funnel([
+            ("Presupuesto", presupuesto_g), ("Recaudo", recaudo),
+            ("Aprobado", aprobado_g), ("Pagado", pagado),
+        ])
+        if funnel:
+            st.plotly_chart(funnel, width="stretch")
+
+        # Honest note: how much of the idle cash sits in national OTROS bolsas.
+        cat_g = (df_giros["nombredepartamento"].astype(str).str.upper().str.strip()
+                 .isin(CATCHALL_NAMES))
+        caja_otros = df_giros.loc[cat_g, "saldocaja"].sum()
+        if caja > 0 and caja_otros > 0:
+            st.caption(
+                f"De los {format_currency_md(caja)} en caja, {format_currency_md(caja_otros)} "
+                f"({caja_otros / caja * 100:.0f}%) están en bolsas nacionales OTROS / sin "
+                f"territorializar."
+            )
+
+        # Where is the cash stuck — by department.
+        st.markdown(section_title("¿Dónde está la plata en caja?"), unsafe_allow_html=True)
+        st.caption(
+            "Top departamentos por saldo en caja: cuánto han pagado (azul) frente a cuánto "
+            "sigue sin ejecutar (ámbar)."
+        )
+        dept_fig = create_giros_dept_chart(df_giros, top_n=10)
+        if dept_fig:
+            st.plotly_chart(dept_fig, width="stretch")
+        else:
+            st.caption("Sin departamentos territorializados con saldo en caja en la selección.")
+
+        # Download
+        excel_g = convert_df_to_excel(df_giros)
+        ts_g = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.download_button(
+            label="Descargar giros y pagos (Excel)",
+            data=excel_g,
+            file_name=f"SGR_giros_{ts_g}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_giros",
+        )
+        st.caption(
+            f"Total filas cargadas: {giros_rows:,}  ·  "
+            f"Fuente: datos.gov.co (giros y pagos SGR, e624-d9uy)"
+        )
+
 
 # ===== TAB: TERRITORIO (cross-dataset value) =====
 # Analyst-chosen thresholds (single source of truth for both the logic and the

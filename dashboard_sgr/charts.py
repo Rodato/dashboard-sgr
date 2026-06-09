@@ -983,3 +983,89 @@ def create_desaprobado_chart(dby):
     except Exception as e:
         st.error(f"Error al crear chart de desaprobados: {e}")
         return None
+
+
+# ============================================================================
+# FLUJO DE CAJA (giros/pagos: e624-d9uy)
+# ============================================================================
+
+def create_giros_funnel(stages):
+    """Funnel of the SGR money flow: presupuesto -> recaudo -> aprobado -> pagado.
+
+    `stages` is a list of (label, value) in (expected) decreasing order. The
+    Aprobado->Pagado drop is the disbursement bottleneck.
+    """
+    try:
+        labels = [s[0] for s in stages]
+        values = [float(s[1]) for s in stages]
+        if not values or values[0] <= 0:
+            return None
+        # Darkening blue chain, pagado (last) in amber so the bottleneck stands out.
+        colors = [PALETTE["primary_dark"], PALETTE["primary"],
+                  PALETTE["secondary"], PALETTE["accent"]]
+        fig = go.Figure(go.Funnel(
+            y=labels, x=values,
+            text=[format_currency(v) for v in values],
+            textposition="inside",
+            textinfo="text+percent initial",
+            textfont={"color": "#FFFFFF", "size": 13},
+            marker={"color": colors[: len(values)], "line": {"color": "#FFFFFF", "width": 1}},
+            connector={"line": {"color": PALETTE["border"], "width": 1, "dash": "dot"}},
+            hovertemplate="<b>%{y}</b><br>%{text}<br>%{percentInitial} del presupuesto<extra></extra>",
+        ))
+        return _apply_theme(fig, height=380, margin={"t": 20, "l": 20, "r": 20, "b": 20})
+    except Exception as e:
+        st.error(f"Error al crear funnel de giros: {e}")
+        return None
+
+
+def create_giros_dept_chart(df_giros, top_n=10):
+    """Top departamentos by idle cash (saldo en caja), stacked against what they
+    have actually paid out — shows where collected money is stuck."""
+    try:
+        d = _drop_catchall(df_giros, ["nombredepartamento"])
+        if d.empty:
+            return None
+        g = d.groupby("nombredepartamento").agg(
+            recaudo=("valorrecaudo", "sum"),
+            pagado=("totalpagado", "sum"),
+            caja=("saldocaja", "sum"),
+        ).reset_index()
+        g = g[g["caja"] > 0].nlargest(top_n, "caja")
+        if g.empty:
+            return None
+        g["total"] = g["pagado"] + g["caja"]
+        # Real disbursement rate: paid over what was actually collected.
+        g["pct_pagado"] = (g["pagado"] / g["recaudo"].replace(0, pd.NA) * 100).fillna(0)
+        g = g.sort_values("caja", ascending=True)
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            name="Pagado", y=g["nombredepartamento"], x=g["pagado"], orientation="h",
+            width=0.6, marker={"color": PALETTE["primary"], "line": {"width": 0}},
+            customdata=g[["pct_pagado"]].values,
+            hovertemplate=("<b>%{y}</b><br>Pagado: $%{x:,.0f} "
+                           "(%{customdata[0]:.0f}% de lo recaudado)<extra></extra>"),
+        ))
+        fig.add_trace(go.Bar(
+            name="En caja", y=g["nombredepartamento"], x=g["caja"], orientation="h",
+            width=0.6, marker={"color": PALETTE["accent"], "line": {"width": 0}},
+            text=[format_currency(v) for v in g["caja"]],
+            textposition="outside", textfont={"size": 11, "color": PALETTE["text_muted"]},
+            cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>En caja: $%{x:,.0f}<extra></extra>",
+        ))
+        tickvals, ticktext = _currency_ticks(float(g["total"].max()))
+        return _apply_theme(
+            fig, barmode="stack", height=max(400, 38 * len(g) + 90), showlegend=True,
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
+                    "xanchor": "right", "x": 1, "bgcolor": "rgba(0,0,0,0)"},
+            xaxis={"tickmode": "array", "tickvals": tickvals, "ticktext": ticktext,
+                   "gridcolor": PALETTE["border"], "showline": False, "zeroline": False,
+                   "range": [0, float(g["total"].max()) * 1.2]},
+            yaxis={"gridcolor": "rgba(0,0,0,0)", "automargin": True},
+            margin={"t": 40, "l": 20, "r": 50, "b": 40},
+        )
+    except Exception as e:
+        st.error(f"Error al crear chart de caja por departamento: {e}")
+        return None
