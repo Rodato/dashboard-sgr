@@ -72,12 +72,15 @@ def load_data():
                 lambda x: x // 1000 if x % 1000 == 0 else x
             )
 
-            # Convert monetary columns
-            df["presupuestosgrinversion"] = (
-                df["presupuestosgrinversion"].str.strip().astype(float)
+            # Convert monetary columns. Coerce defensively (errors='coerce')
+            # instead of .str.strip().astype(float), which crashes the entire
+            # load on a single stray non-numeric string. Bad cells become NaN and
+            # are simply skipped by the downstream sums.
+            df["presupuestosgrinversion"] = pd.to_numeric(
+                df["presupuestosgrinversion"], errors="coerce"
             )
-            df["recursosaprobadosasignadosspgr"] = (
-                df["recursosaprobadosasignadosspgr"].str.strip().astype(float)
+            df["recursosaprobadosasignadosspgr"] = pd.to_numeric(
+                df["recursosaprobadosasignadosspgr"], errors="coerce"
             )
             df["SALDO_PENDIENTE"] = (
                 df["presupuestosgrinversion"] - df["recursosaprobadosasignadosspgr"]

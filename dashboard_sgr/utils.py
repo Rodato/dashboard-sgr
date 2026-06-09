@@ -4,7 +4,7 @@ import unicodedata
 import pandas as pd
 import streamlit as st
 
-from dashboard_sgr.config import CACHE_TTL, DEPT_ALIAS
+from dashboard_sgr.config import CACHE_TTL, CATCHALL_NAMES, DEPT_ALIAS
 
 
 def strip_accents(text):
@@ -52,6 +52,39 @@ def short_fondo_name(name, max_len=40):
     return result
 
 
+def classify_fondo(datos_fondo):
+    """Classify a single-fondo asignaciones frame by how its budget territorializes.
+
+    Returns ``(shape, stats)`` where ``shape`` is one of:
+      - ``"territorial"``: >=50% of the budget is assigned to real departments,
+        so break the fondo down on presupuesto (+ saldo pendiente).
+      - ``"pot_approved"``: the budget sits in the national OTROS bolsa, but the
+        approved resources ARE distributed by department -> break down on aprobado.
+      - ``"pot_empty"``: both budget and approvals sit in the bolsa -> no
+        territorial breakdown is possible.
+
+    ``stats`` carries ``pres_total``, ``pres_terr``, ``aprob_terr`` (floats) for
+    the explanatory captions. ~14 of 31 SGR fondos are national pots/convocatorias
+    whose presupuesto is 100% in OTROS, which is why this distinction exists.
+    """
+    cat = (
+        datos_fondo["nombredepartamento"].astype(str).str.upper().str.strip()
+        .isin(CATCHALL_NAMES)
+    )
+    pres_total = float(datos_fondo["presupuestosgrinversion"].sum())
+    pres_terr = float(datos_fondo.loc[~cat, "presupuestosgrinversion"].sum())
+    aprob_total = float(datos_fondo["recursosaprobadosasignadosspgr"].sum())
+    aprob_terr = float(datos_fondo.loc[~cat, "recursosaprobadosasignadosspgr"].sum())
+    stats = {"pres_total": pres_total, "pres_terr": pres_terr,
+             "aprob_total": aprob_total, "aprob_terr": aprob_terr}
+    terr_share = (pres_terr / pres_total) if pres_total > 0 else 0.0
+    if terr_share >= 0.5:
+        return "territorial", stats
+    if aprob_terr > 0:
+        return "pot_approved", stats
+    return "pot_empty", stats
+
+
 def normalize_color_intensity(series):
     """Normalize a numeric series to 0-255 range for color mapping."""
     min_val = series.min()
@@ -76,6 +109,17 @@ def format_currency(value):
     if abs_val >= 1_000:
         return f"{sign}${abs_val / 1_000:.1f}K"
     return f"{sign}${abs_val:,.0f}"
+
+
+def format_currency_md(value):
+    """``format_currency`` for Markdown text (st.caption / st.markdown).
+
+    Escapes the ``$`` so Streamlit's KaTeX does not read ``$…$`` as inline math —
+    two dollar amounts in one string otherwise turn the text between them into
+    italic math. Use this in Markdown contexts; keep ``format_currency`` for HTML
+    KPI cards and Plotly chart text, where ``$`` must stay literal.
+    """
+    return format_currency(value).replace("$", "\\$")
 
 
 def aggregate_sgr_data(df, group_cols):

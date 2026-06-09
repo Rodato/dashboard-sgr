@@ -260,19 +260,22 @@ def create_kpi_metrics(df_filtrado):
         return None, 0
 
 
-def _build_hierarchy_records(df_filtrado):
+def _build_hierarchy_records(df_filtrado, value_col="presupuestosgrinversion",
+                             value_label="Presupuesto"):
     """Build (ids, labels, parents, values, texts, hovers) for a
-    Fondo->Depto->Entidad hierarchy.
+    Fondo->Depto->Entidad hierarchy over `value_col`.
 
     - Entity level is collapsed when its name duplicates the department.
     - `texts` are pre-formatted labels per tile (label + currency).
-    - `hovers` include a context-specific "X del fondo" / "X del depto" line.
+    - `hovers` include a context-specific "X del fondo" / "X del depto" line,
+      labelled with `value_label` (so the same builder serves both a presupuesto
+      and a recursos-aprobados breakdown).
     """
     tree_data = df_filtrado.groupby(
         ["nombrefondo", "nombredepartamento", "nombreentidad"], dropna=False
-    ).agg({"presupuestosgrinversion": "sum"}).reset_index()
+    ).agg({value_col: "sum"}).reset_index()
 
-    tree_data = tree_data[tree_data["presupuestosgrinversion"] > 0]
+    tree_data = tree_data[tree_data[value_col] > 0]
     if tree_data.empty:
         return None
 
@@ -281,18 +284,18 @@ def _build_hierarchy_records(df_filtrado):
     for fondo_orig, grupo in tree_data.groupby("nombrefondo", dropna=False):
         fondo_id = f"F::{fondo_orig}"
         fondo_label = short_fondo_name(fondo_orig) if pd.notna(fondo_orig) else "(sin fondo)"
-        fondo_total = float(grupo["presupuestosgrinversion"].sum())
+        fondo_total = float(grupo[value_col].sum())
         ids.append(fondo_id); labels.append(fondo_label); parents.append("")
         values.append(fondo_total)
         texts.append(f"<b>{fondo_label}</b><br>{format_currency(fondo_total)}")
         hovers.append(
-            f"<b>{fondo_label}</b><br>Presupuesto: {format_currency(fondo_total)}"
+            f"<b>{fondo_label}</b><br>{value_label}: {format_currency(fondo_total)}"
         )
 
         for depto, dep_grupo in grupo.groupby("nombredepartamento", dropna=False):
             depto_label = depto if pd.notna(depto) else "(sin depto)"
             depto_id = f"{fondo_id}||D::{depto_label}"
-            dep_total = float(dep_grupo["presupuestosgrinversion"].sum())
+            dep_total = float(dep_grupo[value_col].sum())
             dep_pct = dep_total / fondo_total * 100 if fondo_total else 0
             ids.append(depto_id); labels.append(depto_label); parents.append(fondo_id)
             values.append(dep_total)
@@ -302,7 +305,7 @@ def _build_hierarchy_records(df_filtrado):
             )
             hovers.append(
                 f"<b>{depto_label}</b><br>"
-                f"Presupuesto: {format_currency(dep_total)}<br>"
+                f"{value_label}: {format_currency(dep_total)}<br>"
                 f"{dep_pct:.2f}% de {fondo_label}"
             )
 
@@ -323,7 +326,7 @@ def _build_hierarchy_records(df_filtrado):
                 ent_label = row["nombreentidad"] if pd.notna(row["nombreentidad"]) else "(sin entidad)"
                 if str(ent_label).upper().strip() == dep_norm and len(dep_grupo) == 1:
                     continue
-                ent_value = float(row["presupuestosgrinversion"])
+                ent_value = float(row[value_col])
                 ent_pct = ent_value / dep_total * 100 if dep_total else 0
                 ent_id = f"{depto_id}||E::{ent_label}"
                 ids.append(ent_id); labels.append(ent_label); parents.append(depto_id)
@@ -334,16 +337,24 @@ def _build_hierarchy_records(df_filtrado):
                 )
                 hovers.append(
                     f"<b>{ent_label}</b><br>"
-                    f"Presupuesto: {format_currency(ent_value)}<br>"
+                    f"{value_label}: {format_currency(ent_value)}<br>"
                     f"{ent_pct:.2f}% de {depto_label}"
                 )
 
     return ids, labels, parents, values, texts, hovers
 
 
-def create_treemap_chart(df_filtrado):
+def create_treemap_chart(df_filtrado, value_col="presupuestosgrinversion",
+                         value_label="Presupuesto", drop_catchall=False):
     try:
-        records = _build_hierarchy_records(df_filtrado)
+        # Territorial funds keep the OTROS presupuesto box visible (honest context
+        # for partially territorialized funds). National-pot funds pass
+        # drop_catchall=True so the aprobado tree is a clean territorial breakdown
+        # whose total matches the ranking and the caption (e.g. PAZ carries ~$948B
+        # aprobado in OTROS that would otherwise read as an unexplained box).
+        df_src = (_drop_catchall(df_filtrado, ["nombredepartamento", "nombreentidad"])
+                  if drop_catchall else df_filtrado)
+        records = _build_hierarchy_records(df_src, value_col, value_label)
         if records is None:
             return None
         ids, labels, parents, values, texts, hovers = records
@@ -367,9 +378,12 @@ def create_treemap_chart(df_filtrado):
         return None
 
 
-def create_sunburst_chart(df_filtrado):
+def create_sunburst_chart(df_filtrado, value_col="presupuestosgrinversion",
+                          value_label="Presupuesto", drop_catchall=False):
     try:
-        records = _build_hierarchy_records(df_filtrado)
+        df_src = (_drop_catchall(df_filtrado, ["nombredepartamento", "nombreentidad"])
+                  if drop_catchall else df_filtrado)
+        records = _build_hierarchy_records(df_src, value_col, value_label)
         if records is None:
             return None
         ids, labels, parents, values, texts, hovers = records
@@ -518,13 +532,18 @@ def create_bottom_ejecucion_chart(df_filtrado, bottom_n=5):
         return None
 
 
-def create_saldo_pendiente_chart(df_filtrado, top_n=10):
+def create_entidad_ranking_chart(df_filtrado, value_col, value_label, top_n=10):
+    """Horizontal bar: top entidades by `value_col` (catch-alls dropped).
+
+    Generic so Detalles can rank by 'Saldo pendiente' for territorialized funds
+    or by 'Recursos aprobados' for national-pot funds (whose saldo is all zero).
+    """
     try:
         df_ranked = _drop_catchall(df_filtrado, ["nombreentidad", "nombredepartamento"])
         entidad_data = aggregate_sgr_data(df_ranked, ["nombreentidad", "nombredepartamento"])
-        entidad_data = entidad_data.nlargest(top_n, "SALDO_PENDIENTE")
+        entidad_data = entidad_data.nlargest(top_n, value_col)
 
-        if entidad_data.empty or entidad_data["SALDO_PENDIENTE"].sum() == 0:
+        if entidad_data.empty or entidad_data[value_col].sum() == 0:
             return None
 
         def _entidad_label(row):
@@ -538,20 +557,20 @@ def create_saldo_pendiente_chart(df_filtrado, top_n=10):
 
         fig = px.bar(
             entidad_data,
-            x="SALDO_PENDIENTE",
+            x=value_col,
             y="label",
             orientation="h",
-            labels={"SALDO_PENDIENTE": "Saldo pendiente", "label": ""},
-            color="SALDO_PENDIENTE",
+            labels={value_col: value_label, "label": ""},
+            color=value_col,
             color_continuous_scale=CHART_SCALE_WARM,
         )
         fig.update_traces(
-            text=[format_currency(v) for v in entidad_data["SALDO_PENDIENTE"]],
+            text=[format_currency(v) for v in entidad_data[value_col]],
             textposition="outside",
-            hovertemplate="<b>%{y}</b><br>Saldo: $%{x:,.0f}<extra></extra>",
+            hovertemplate="<b>%{y}</b><br>" + value_label + ": $%{x:,.0f}<extra></extra>",
             cliponaxis=False,
         )
-        tickvals, ticktext = _currency_ticks(entidad_data["SALDO_PENDIENTE"].max())
+        tickvals, ticktext = _currency_ticks(entidad_data[value_col].max())
         return _apply_theme(
             fig,
             height=max(400, 38 * len(entidad_data) + 80),
@@ -561,14 +580,21 @@ def create_saldo_pendiente_chart(df_filtrado, top_n=10):
             xaxis={
                 "tickmode": "array", "tickvals": tickvals, "ticktext": ticktext,
                 "gridcolor": PALETTE["border"], "showline": False, "zeroline": False,
-                "range": [0, entidad_data["SALDO_PENDIENTE"].max() * 1.18],
+                "range": [0, entidad_data[value_col].max() * 1.18],
             },
             margin={"t": 20, "l": 20, "r": 40, "b": 40},
         )
 
     except Exception as e:
-        st.error(f"Error al crear grafico de saldo pendiente: {e}")
+        st.error(f"Error al crear ranking de entidades: {e}")
         return None
+
+
+def create_saldo_pendiente_chart(df_filtrado, top_n=10):
+    """Back-compat wrapper: rank entidades by saldo pendiente."""
+    return create_entidad_ranking_chart(
+        df_filtrado, "SALDO_PENDIENTE", "Saldo pendiente", top_n=top_n
+    )
 
 
 def create_vigencia_chart(df_filtrado):
@@ -619,6 +645,14 @@ ESTADO_COLORS = {
     "TERMINADO": PALETTE["success"],
     "EN EJECUCIÓN": PALETTE["primary"],
     "DESAPROBADO": PALETTE["danger"],
+}
+
+# Distinct marker shapes per estado: a redundant (colorblind-safe) encoding so
+# the execution scatter is readable without relying on color alone.
+ESTADO_SYMBOLS = {
+    "TERMINADO": "circle",
+    "EN EJECUCIÓN": "diamond",
+    "DESAPROBADO": "x",
 }
 
 
@@ -758,7 +792,8 @@ def create_proyectos_ejecucion_chart(df_proyectos):
                 y=part["ejecucionfinanciera"],
                 mode="markers",
                 name=estado,
-                marker={"color": color, "size": 6, "opacity": 0.55,
+                marker={"color": color, "size": 7, "opacity": 0.55,
+                        "symbol": ESTADO_SYMBOLS.get(estado, "circle"),
                         "line": {"width": 0}},
                 hovertemplate=(
                     "<b>%{customdata[0]}</b><br>"
@@ -767,11 +802,20 @@ def create_proyectos_ejecucion_chart(df_proyectos):
                 ),
                 customdata=part[["nombre"]].values if "nombre" in part.columns else None,
             ))
+        # Autoscale the top so executions >100% stay visible (the data has ~200
+        # projects with financiera >100%); only pin the floor at 0. The dotted
+        # diagonal is física=financiera — points above it are "paying ahead".
+        hi = float(max(sub["ejecucionfisica"].max(),
+                       sub["ejecucionfinanciera"].max(), 100.0))
         return _apply_theme(
             fig, height=400,
-            xaxis={"title": "Ejecucion fisica (%)", "range": [0, 105],
+            shapes=[{
+                "type": "line", "x0": 0, "y0": 0, "x1": hi, "y1": hi,
+                "line": {"color": PALETTE["border"], "width": 1, "dash": "dot"},
+            }],
+            xaxis={"title": "Ejecucion fisica (%)", "rangemode": "tozero",
                    "gridcolor": PALETTE["border"]},
-            yaxis={"title": "Ejecucion financiera (%)", "range": [0, 105],
+            yaxis={"title": "Ejecucion financiera (%)", "rangemode": "tozero",
                    "gridcolor": PALETTE["border"]},
             legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
                     "xanchor": "right", "x": 1, "bgcolor": "rgba(0,0,0,0)"},
