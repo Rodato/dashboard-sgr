@@ -5,6 +5,7 @@ from datetime import datetime
 from dashboard_sgr.config import (
     COLUMN_LABELS,
     COLUMNS_TO_EXCLUDE,
+    ESTADO_EN_EJECUCION,
     MONETARY_COLUMNS,
 )
 from dashboard_sgr.data import load_data, load_proyectos
@@ -29,6 +30,7 @@ from dashboard_sgr.analytics import (
     desaprobado_by_dept,
     national_execution,
     paying_ahead,
+    territorialize,
     territorio_join,
     zombies,
     zombies_by_year,
@@ -317,28 +319,40 @@ with tab_resumen:
         )
 
 # ===== TAB: TERRITORIO (cross-dataset value) =====
+# Analyst-chosen thresholds (single source of truth for both the logic and the
+# captions so they never drift apart).
+GAP_PP = 20          # paying-ahead: financiera - física, en puntos porcentuales
+ZOMBIE_YEAR = 2020   # zombie: proyectos formulados antes de este año BPIN
+
 with tab_territorio:
     st.caption(
         "Cruce de las dos fuentes: **presupuesto asignado 2025-26** (asignaciones por fondo) "
         "frente a la **cartera de proyectos** que se ejecuta en el territorio (DNP-ProyectosSGR, "
         "histórico). Son horizontes distintos —el presupuesto es la nueva vigencia; los proyectos "
         "son el acumulado—, leelos como *cuánta plata nueva llega vs. qué capacidad de ejecución "
-        "tiene ese territorio*. Excluye bolsas no territorializadas (OTROS / sin ubicación / corporaciones)."
+        "tiene ese territorio*."
     )
 
     if df_proy_side is None or df_proy_side.empty:
         st.warning("No hay datos de proyectos para el cruce territorial con los filtros actuales.")
     else:
         terr = territorio_join(df_filtrado, df_proy_side)
-        nat_fis, nat_fin = national_execution(df_proy_side)
-        pa = paying_ahead(df_proy_side)
-        zb = zombies(df_proy_side)
+        # Benchmark reference is the TRUE national average (full portfolio,
+        # territorialized, project-grain) so it stays fixed under a depto filter.
+        nat_fis, nat_fin = national_execution(df_proyectos_full)
+        pa = paying_ahead(df_proy_side, gap_pp=GAP_PP)
+        zb = zombies(df_proy_side, before_year=ZOMBIE_YEAR)
 
         if terr.empty:
             st.warning("Sin departamentos con presupuesto y proyectos para cruzar.")
         else:
+            # Distinct (project-grain) active set within the territorialized selection.
+            act_terr = territorialize(df_proy_side)
+            act_terr = act_terr[act_terr["estado"] == ESTADO_EN_EJECUCION].drop_duplicates("codigobpin")
+            # Alerts: union of distinct flagged projects (some are both).
+            n_alertas = len(pa.index.union(zb.index))
+
             # --- KPIs ---
-            n_alertas = len(pa) + len(zb)
             k1, k2, k3, k4 = st.columns(4)
             with k1:
                 st.markdown(kpi_card("Departamentos", f"{len(terr)}"), unsafe_allow_html=True)
@@ -349,18 +363,33 @@ with tab_territorio:
                 )
             with k3:
                 st.markdown(
-                    kpi_card("Proyectos activos", f"{int(terr['n_activos'].sum()):,}"),
+                    kpi_card("Proyectos activos", f"{len(act_terr):,}"),
                     unsafe_allow_html=True,
                 )
             with k4:
                 st.markdown(kpi_card("Alertas de auditoría", f"{n_alertas:,}"), unsafe_allow_html=True)
+
+            # --- Honest disclosure of what the cross leaves out ---
+            total_pto = df_filtrado["presupuestosgrinversion"].sum()
+            terr_pto = terr["presupuesto"].sum()
+            pct_excl = ((total_pto - terr_pto) / total_pto * 100) if total_pto else 0
+            excl_proy = df_proy_side[~df_proy_side.index.isin(territorialize(df_proy_side).index)]
+            n_excl = excl_proy["codigobpin"].nunique()
+            v_excl = excl_proy.drop_duplicates("codigobpin")["valortotal"].sum()
+            st.caption(
+                f"Territorializa **{format_currency(terr_pto)}** de {format_currency(total_pto)} del "
+                f"presupuesto ({pct_excl:.0f}% queda en bolsas no territorializables: OTROS / corporaciones "
+                f"/ sin ubicación). Del lado de proyectos se excluyen {n_excl:,} sin departamento "
+                f"identificable ({format_currency(v_excl)}); sí cuentan en la pestaña Proyectos."
+            )
 
             # --- Hero: money-in vs delivery ---
             st.markdown(section_title("Plata asignada vs. ejecución en el territorio"),
                         unsafe_allow_html=True)
             st.caption(
                 "Cada burbuja es un departamento · Eje X: presupuesto 2025-26 · Eje Y: ejecución "
-                "financiera promedio de sus proyectos activos · Tamaño: valor en ejecución. "
+                "financiera promedio de sus proyectos activos · Tamaño: valor acumulado de la cartera "
+                "activa (todas las vigencias; proyectos multi-departamento cuentan en cada territorio). "
                 "Abajo-derecha (mucha plata nueva, baja ejecución) = vigilar."
             )
             sc = create_territorio_scatter(terr, nat_fin)
@@ -370,7 +399,13 @@ with tab_territorio:
             # --- Decision table ---
             st.markdown(section_title("Tabla de decisión por departamento"), unsafe_allow_html=True)
             tbl = terr.copy()
-            tbl["delta_nac"] = tbl["ejec_fin"] - nat_fin
+            # Nullable Float64 so departments with no active projects render blank
+            # (not 'nan') in the execution/delta columns.
+            for c in ["ejec_fis", "ejec_fin"]:
+                tbl[c] = tbl[c].astype("Float64")
+            tbl["delta_nac"] = (tbl["ejec_fin"] - nat_fin).astype("Float64")
+            no_active = tbl["n_activos"] == 0
+            tbl.loc[no_active, ["ejec_fis", "ejec_fin", "delta_nac"]] = pd.NA
             tbl = tbl[[
                 "depto", "presupuesto", "aprobado", "n_proy", "n_activos",
                 "valor_activos", "ejec_fis", "ejec_fin", "delta_nac", "n_desaprobados",
@@ -387,19 +422,27 @@ with tab_territorio:
                     "ejec_fis": st.column_config.NumberColumn("% Físico", format="%.0f%%"),
                     "ejec_fin": st.column_config.NumberColumn("% Financiero", format="%.0f%%"),
                     "delta_nac": st.column_config.NumberColumn("vs Nacional", format="%+.0f pp",
-                        help="Puntos de ejecución financiera frente al promedio nacional de proyectos activos"),
+                        help="Puntos de ejecución financiera (activos) frente al promedio nacional"),
                     "n_desaprobados": st.column_config.NumberColumn("Desaprob.", format="%d"),
                 },
             )
 
             # --- Benchmark vs national ---
             st.markdown(section_title("Ejecución vs. promedio nacional"), unsafe_allow_html=True)
+            st.caption(
+                f"Promedio simple por proyecto (no ponderado por valor). Referencia nacional: "
+                f"{nat_fin:.0f}% financiera · {nat_fis:.0f}% física (proyectos activos)."
+            )
             bm = create_benchmark_chart(terr, nat_fin)
             if bm:
                 st.plotly_chart(bm, use_container_width=True)
 
             # --- Audit red-flag panels ---
             st.markdown(section_title("Alertas de auditoría"), unsafe_allow_html=True)
+            st.caption(
+                f"Umbrales elegidos por el analista (ajustables): brecha financiera−física > {GAP_PP} pp · "
+                f"proyectos formulados antes de {ZOMBIE_YEAR}. Cifras a nivel de proyecto único."
+            )
 
             # 1) Paying ahead of delivery
             st.markdown(
@@ -411,9 +454,9 @@ with tab_territorio:
                 st.caption("Sin proyectos con la ejecución financiera muy por delante de la física.")
             else:
                 st.caption(
-                    f"**{len(pa):,}** proyectos en ejecución con la financiera más de 20 pp por encima "
-                    f"de la física (${pa['valortotal'].sum() / 1e12:.1f}T en juego) — candidatos prioritarios "
-                    f"de auditoría. Top 20 por valor:"
+                    f"**{len(pa):,}** proyectos en ejecución con la financiera más de {GAP_PP} pp por encima "
+                    f"de la física ({format_currency(pa['valortotal'].sum())} en valor total de los proyectos "
+                    f"señalados) — candidatos prioritarios de auditoría. Top 20 por valor:"
                 )
                 pa_cols = [c for c in [
                     "codigobpin", "nombre", "departamento", "valortotal",
@@ -426,10 +469,9 @@ with tab_territorio:
                         "nombre": st.column_config.Column("Proyecto"),
                         "departamento": st.column_config.Column("Departamento"),
                         "valortotal": st.column_config.NumberColumn("Valor total", format="dollar"),
-                        "ejecucionfisica": st.column_config.ProgressColumn(
-                            "% Físico", format="%.0f%%", min_value=0, max_value=100),
-                        "ejecucionfinanciera": st.column_config.ProgressColumn(
-                            "% Financiero", format="%.0f%%", min_value=0, max_value=100),
+                        # NumberColumn (not Progress) so values >100% read literally.
+                        "ejecucionfisica": st.column_config.NumberColumn("% Físico", format="%.0f%%"),
+                        "ejecucionfinanciera": st.column_config.NumberColumn("% Financiero", format="%.0f%%"),
                         "gap": st.column_config.NumberColumn("Brecha", format="%.0f pp"),
                     },
                 )
@@ -437,17 +479,17 @@ with tab_territorio:
             # 2) Zombie projects (stalled vintages)
             st.markdown(
                 f'<div style="color:{PALETTE["primary_dark"]}; font-weight:600; margin:1rem 0 0.5rem 0;">'
-                f'Proyectos zombie (formulados antes de 2020, aún en ejecución)</div>',
+                f'Proyectos zombie (formulados antes de {ZOMBIE_YEAR}, aún en ejecución)</div>',
                 unsafe_allow_html=True,
             )
             if zb.empty:
-                st.caption("Sin proyectos en ejecución formulados antes de 2020.")
+                st.caption(f"Sin proyectos en ejecución formulados antes de {ZOMBIE_YEAR}.")
             else:
                 st.caption(
-                    f"**{len(zb):,}** proyectos formulados antes de 2020 siguen *en ejecución* "
-                    f"(${zb['valortotal'].sum() / 1e12:.1f}T comprometidos que no terminan de aterrizar)."
+                    f"**{len(zb):,}** proyectos formulados antes de {ZOMBIE_YEAR} siguen *en ejecución* "
+                    f"({format_currency(zb['valortotal'].sum())} comprometidos que no terminan de aterrizar)."
                 )
-                zby = zombies_by_year(df_proy_side)
+                zby = zombies_by_year(df_proy_side, before_year=ZOMBIE_YEAR, z=zb)
                 zfig = create_zombie_year_chart(zby)
                 if zfig:
                     st.plotly_chart(zfig, use_container_width=True)

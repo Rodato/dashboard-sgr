@@ -250,9 +250,21 @@ def load_proyectos():
 
             for col in ["sector", "estado", "departamento", "entidadejecutora"]:
                 if col in df.columns:
-                    df[col] = df[col].astype(str).str.strip()
+                    df[col] = df[col].astype(str).str.strip().replace(
+                        {"nan": "", "None": "", "<NA>": ""}
+                    )
 
-            return df, rows_fetched
+            # The dataset is at (project x department x OCAD) grain: a project is
+            # repeated once per OCAD with the FULL valortotal each time, which would
+            # inflate every value/count sum. Collapse the pure multi-OCAD duplicates
+            # (same project + department); genuine multi-department projects keep one
+            # row per department.
+            if {"codigobpin", "departamento"}.issubset(df.columns):
+                df = df.drop_duplicates(
+                    subset=["codigobpin", "departamento"], keep="first"
+                ).reset_index(drop=True)
+
+            return df, len(df)
 
         except Exception as e:
             if attempt < API_MAX_RETRIES:

@@ -2,8 +2,9 @@ import io
 import unicodedata
 
 import pandas as pd
+import streamlit as st
 
-from dashboard_sgr.config import DEPT_ALIAS
+from dashboard_sgr.config import CACHE_TTL, DEPT_ALIAS
 
 
 def strip_accents(text):
@@ -88,8 +89,13 @@ def aggregate_sgr_data(df, group_cols):
     }).reset_index()
 
 
+@st.cache_data(ttl=CACHE_TTL)
 def convert_df_to_excel(df):
-    """Convert a DataFrame to Excel bytes for download."""
+    """Convert a DataFrame to Excel bytes for download.
+
+    Cached because st.download_button materializes the bytes on every rerun;
+    openpyxl serialization of the larger frames costs ~1s otherwise.
+    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Datos_SGR", float_format="%.2f")
