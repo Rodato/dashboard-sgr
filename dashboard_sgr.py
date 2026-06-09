@@ -14,13 +14,13 @@ from dashboard_sgr.charts import (
     create_benchmark_chart,
     create_bottom_ejecucion_chart,
     create_desaprobado_chart,
+    create_entidad_ranking_chart,
     create_fondo_pie_chart,
     create_presupuesto_vs_saldo_chart,
     create_proyectos_ejecucion_chart,
     create_proyectos_estado_chart,
     create_proyectos_sector_donut,
     create_proyectos_top_entidades_chart,
-    create_saldo_pendiente_chart,
     create_sunburst_chart,
     create_territorio_scatter,
     create_treemap_chart,
@@ -38,6 +38,7 @@ from dashboard_sgr.analytics import (
 )
 from dashboard_sgr.theme import CUSTOM_CSS, PALETTE, kpi_card, section_title
 from dashboard_sgr.utils import (
+    classify_fondo,
     convert_df_to_excel,
     format_currency,
     format_currency_md,
@@ -574,6 +575,10 @@ with tab_detalles:
             label_visibility="collapsed",
         )
         datos_fondo = df_filtrado[df_filtrado["nombrefondo"] == fondo_sel]
+        # Classify up front: ~14 of 31 fondos are national "bolsas"/convocatorias
+        # whose presupuesto lives entirely in OTROS. The shape drives both the 4th
+        # KPI and the breakdown below.
+        fondo_shape, fondo_stats = classify_fondo(datos_fondo)
         st.markdown(
             f'<div style="color: {PALETTE["primary_dark"]}; font-weight: 600; margin: 0.75rem 0 0.5rem 0;">{fondo_sel}</div>',
             unsafe_allow_html=True,
@@ -593,42 +598,107 @@ with tab_detalles:
                 unsafe_allow_html=True,
             )
         with c4:
-            st.markdown(
-                kpi_card("Pendiente", format_currency(datos_fondo["SALDO_PENDIENTE"].sum())),
-                unsafe_allow_html=True,
+            # For national-pot funds the per-row "Pendiente" (presupuesto-aprobado)
+            # is just the un-territorialized OTROS bolsa and would contradict the
+            # caption below; show the territorialized approved instead (which is
+            # what the breakdown actually sums to).
+            if fondo_shape == "territorial":
+                st.markdown(
+                    kpi_card("Pendiente", format_currency(datos_fondo["SALDO_PENDIENTE"].sum())),
+                    unsafe_allow_html=True,
+                )
+            elif fondo_shape == "pot_approved":
+                st.markdown(
+                    kpi_card("Aprobado territ.", format_currency(fondo_stats["aprob_terr"])),
+                    unsafe_allow_html=True,
+                )
+            else:  # pot_empty: aprob_terr is 0 by definition; a bare "$0" next to
+                # the full "Aprobado" reads as broken, so show the share instead.
+                st.markdown(
+                    kpi_card("Territorializado", "0%"),
+                    unsafe_allow_html=True,
+                )
+
+        # Pick the breakdown metric from the fondo shape (classified above). The
+        # tree drops catch-alls only for the aprobado path so its total, the
+        # ranking and the caption all report the same territorialized universe.
+        tree_drop_catchall = False
+        if fondo_shape == "territorial":
+            rank_col, rank_label = "SALDO_PENDIENTE", "Saldo pendiente"
+            tree_col, tree_label = "presupuestosgrinversion", "Presupuesto"
+        elif fondo_shape == "pot_approved":
+            rank_col, rank_label = "recursosaprobadosasignadosspgr", "Recursos aprobados"
+            tree_col, tree_label = "recursosaprobadosasignadosspgr", "Recursos aprobados"
+            tree_drop_catchall = True
+            gap = fondo_stats["aprob_total"] - fondo_stats["aprob_terr"]
+            detalle_aprob = (
+                f" ({format_currency_md(fondo_stats['aprob_terr'])} de "
+                f"{format_currency_md(fondo_stats['aprob_total'])} aprobados; el resto sigue "
+                f"en la bolsa nacional)" if gap > 0 else ""
+            )
+            st.caption(
+                f"Este fondo opera como **bolsa nacional / convocatoria**: su presupuesto "
+                f"({format_currency_md(fondo_stats['pres_total'])}) figura sin territorializar "
+                f"(bolsa OTROS). El desglose de abajo usa los **recursos aprobados asignados "
+                f"por departamento**{detalle_aprob}."
+            )
+        else:  # pot_empty
+            rank_col = rank_label = tree_col = tree_label = None
+            st.caption(
+                f"Este fondo opera como **bolsa nacional**: tanto el presupuesto "
+                f"({format_currency_md(fondo_stats['pres_total'])}) como los recursos aprobados "
+                f"figuran sin territorializar (sin departamento). No hay desglose territorial "
+                f"para este fondo; ver la tabla de datos abajo."
             )
 
-        # --- Top entidades por saldo pendiente (scoped al fondo seleccionado) ---
-        r1, r2 = st.columns([3, 1])
-        with r1:
-            st.markdown(section_title(f"Entidades con mayor saldo pendiente · {fondo_sel}"),
-                        unsafe_allow_html=True)
-        with r2:
-            top_n = st.selectbox(
-                "Mostrar:", [5, 10, 15, 20], index=1,
-                format_func=lambda n: f"Top {n}",
-                label_visibility="collapsed",
+        if fondo_shape != "pot_empty":
+            # --- Ranking de entidades (métrica según la forma del fondo) ---
+            r1, r2 = st.columns([3, 1])
+            with r1:
+                st.markdown(
+                    section_title(f"Top entidades por {rank_label.lower()} · {fondo_sel}"),
+                    unsafe_allow_html=True,
+                )
+            with r2:
+                top_n = st.selectbox(
+                    "Mostrar:", [5, 10, 15, 20], index=1,
+                    format_func=lambda n: f"Top {n}",
+                    label_visibility="collapsed",
+                )
+            rank_fig = create_entidad_ranking_chart(
+                datos_fondo, rank_col, rank_label, top_n=top_n
             )
-        saldo_fig = create_saldo_pendiente_chart(datos_fondo, top_n=top_n)
-        if saldo_fig:
-            st.plotly_chart(saldo_fig, use_container_width=True)
+            if rank_fig:
+                st.plotly_chart(rank_fig, use_container_width=True)
+            else:
+                st.caption("Sin entidades territorializadas para rankear en este fondo.")
 
-        # Jerarquico: filtrado por fondo seleccionado
-        h1, h2 = st.columns([3, 1])
-        with h1:
-            st.markdown(section_title(f"Distribucion jerarquica · {fondo_sel}"),
-                        unsafe_allow_html=True)
-        with h2:
-            hierarchy_view = st.radio(
-                "Vista:", ["Treemap", "Sunburst"],
-                horizontal=True, label_visibility="collapsed",
-            )
-        if hierarchy_view == "Treemap":
-            hierarchy_fig = create_treemap_chart(datos_fondo)
-        else:
-            hierarchy_fig = create_sunburst_chart(datos_fondo)
-        if hierarchy_fig:
-            st.plotly_chart(hierarchy_fig, use_container_width=True)
+            # --- Distribución jerárquica (Fondo → Depto → Entidad) ---
+            h1, h2 = st.columns([3, 1])
+            with h1:
+                st.markdown(
+                    section_title(
+                        f"Distribucion jerarquica ({tree_label.lower()}) · {fondo_sel}"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with h2:
+                hierarchy_view = st.radio(
+                    "Vista:", ["Treemap", "Sunburst"],
+                    horizontal=True, label_visibility="collapsed",
+                )
+            if hierarchy_view == "Treemap":
+                hierarchy_fig = create_treemap_chart(
+                    datos_fondo, tree_col, tree_label, drop_catchall=tree_drop_catchall
+                )
+            else:
+                hierarchy_fig = create_sunburst_chart(
+                    datos_fondo, tree_col, tree_label, drop_catchall=tree_drop_catchall
+                )
+            if hierarchy_fig:
+                st.plotly_chart(hierarchy_fig, use_container_width=True)
+            else:
+                st.caption("Sin desglose territorial para este fondo.")
 
         # Vigencia (solo si hay mas de una)
         vigencia_fig = create_vigencia_chart(df_filtrado)
