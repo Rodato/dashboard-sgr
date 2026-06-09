@@ -983,3 +983,106 @@ def create_desaprobado_chart(dby):
     except Exception as e:
         st.error(f"Error al crear chart de desaprobados: {e}")
         return None
+
+
+# ============================================================================
+# FLUJO DE CAJA (giros/pagos: e624-d9uy)
+# ============================================================================
+
+def create_giros_flujo_chart(stages):
+    """Horizontal bars comparing the SGR cash magnitudes (presupuesto, recaudo,
+    aprobado, pagado).
+
+    Deliberately NOT a funnel: ``aprobado`` (recursosaprobadosasignadosspgr) is an
+    *accumulated* cross-vigency stock that can exceed recaudo — even presupuesto —
+    per entity, so the magnitudes are NOT strict nested subsets. Independent bars
+    avoid implying a false attrition pipeline and stay correct under any filter (a
+    funnel would visually invert when a middle magnitude is larger). The shrinkage
+    from presupuesto to pagado is still plainly visible as bar length.
+
+    `stages` is a list of (label, value); the first is the % reference.
+    """
+    try:
+        labels = [s[0] for s in stages]
+        values = [float(s[1]) for s in stages]
+        if not values or max(values) <= 0:
+            return None
+        base = values[0] if values[0] > 0 else max(values)
+        colors = [PALETTE["primary_dark"], PALETTE["primary"],
+                  PALETTE["secondary"], PALETTE["accent"]]
+        text = [f"{format_currency(v)}  ·  {v / base * 100:.0f}%" for v in values]
+        fig = go.Figure(go.Bar(
+            y=labels, x=values, orientation="h", width=0.62,
+            marker={"color": colors[: len(values)], "line": {"width": 0}},
+            text=text, textposition="outside", cliponaxis=False,
+            textfont={"size": 12, "color": PALETTE["text_muted"]},
+            customdata=[[v / base * 100] for v in values],
+            hovertemplate=("<b>%{y}</b><br>%{x:$,.0f}<br>"
+                           "%{customdata[0]:.0f}% del presupuesto<extra></extra>"),
+        ))
+        tickvals, ticktext = _currency_ticks(max(values))
+        return _apply_theme(
+            fig, height=300, showlegend=False,
+            xaxis={"tickmode": "array", "tickvals": tickvals, "ticktext": ticktext,
+                   "gridcolor": PALETTE["border"], "zeroline": False,
+                   "range": [0, max(values) * 1.30]},
+            yaxis={"categoryorder": "array", "categoryarray": list(reversed(labels)),
+                   "gridcolor": "rgba(0,0,0,0)", "automargin": True},
+            margin={"t": 20, "l": 20, "r": 70, "b": 40},
+        )
+    except Exception as e:
+        st.error(f"Error al crear chart de flujo de giros: {e}")
+        return None
+
+
+def create_giros_dept_chart(df_giros, top_n=10):
+    """Top departamentos by idle cash (saldo en caja), stacked against what they
+    have actually paid out — shows where collected money is stuck."""
+    try:
+        d = _drop_catchall(df_giros, ["nombredepartamento"])
+        if d.empty:
+            return None
+        g = d.groupby("nombredepartamento").agg(
+            recaudo=("valorrecaudo", "sum"),
+            pagado=("totalpagado", "sum"),
+            caja=("saldocaja", "sum"),
+        ).reset_index()
+        g = g[g["caja"] > 0].nlargest(top_n, "caja")
+        if g.empty:
+            return None
+        # Real disbursement rate: paid over what was actually collected.
+        g["pct_pagado"] = (g["pagado"] / g["recaudo"].replace(0, pd.NA) * 100).fillna(0)
+        g = g.sort_values("caja", ascending=True)
+        # Grouped (not stacked): pagado and saldocaja are distinct reported figures
+        # that do NOT sum to recaudo, so a stacked "total" would be a false whole.
+        maxv = max(float(g["pagado"].max()), float(g["caja"].max()))
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            name="Pagado", y=g["nombredepartamento"], x=g["pagado"], orientation="h",
+            marker={"color": PALETTE["primary"], "line": {"width": 0}},
+            customdata=g[["pct_pagado"]].values,
+            hovertemplate=("<b>%{y}</b><br>Pagado: $%{x:,.0f} "
+                           "(%{customdata[0]:.0f}% de lo recaudado)<extra></extra>"),
+        ))
+        fig.add_trace(go.Bar(
+            name="En caja", y=g["nombredepartamento"], x=g["caja"], orientation="h",
+            marker={"color": PALETTE["accent"], "line": {"width": 0}},
+            customdata=g[["recaudo"]].values,
+            hovertemplate=("<b>%{y}</b><br>En caja: $%{x:,.0f}<br>"
+                           "Recaudo: $%{customdata[0]:,.0f}<extra></extra>"),
+        ))
+        tickvals, ticktext = _currency_ticks(maxv)
+        return _apply_theme(
+            fig, barmode="group", height=max(420, 46 * len(g) + 90), showlegend=True,
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02,
+                    "xanchor": "right", "x": 1, "bgcolor": "rgba(0,0,0,0)"},
+            xaxis={"tickmode": "array", "tickvals": tickvals, "ticktext": ticktext,
+                   "gridcolor": PALETTE["border"], "showline": False, "zeroline": False,
+                   "range": [0, maxv * 1.18]},
+            yaxis={"gridcolor": "rgba(0,0,0,0)", "automargin": True},
+            margin={"t": 40, "l": 20, "r": 50, "b": 40},
+        )
+    except Exception as e:
+        st.error(f"Error al crear chart de caja por departamento: {e}")
+        return None

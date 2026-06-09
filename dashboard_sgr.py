@@ -9,13 +9,15 @@ from dashboard_sgr.config import (
     ESTADO_EN_EJECUCION,
     MONETARY_COLUMNS,
 )
-from dashboard_sgr.data import load_data, load_proyectos
+from dashboard_sgr.data import load_data, load_giros, load_proyectos
 from dashboard_sgr.charts import (
     create_benchmark_chart,
     create_bottom_ejecucion_chart,
     create_desaprobado_chart,
     create_entidad_ranking_chart,
     create_fondo_pie_chart,
+    create_giros_dept_chart,
+    create_giros_flujo_chart,
     create_presupuesto_vs_saldo_chart,
     create_proyectos_ejecucion_chart,
     create_proyectos_estado_chart,
@@ -178,10 +180,10 @@ busqueda_texto = st.sidebar.text_input(
 with st.sidebar:
     st.markdown(f'<div style="margin-top: 1rem; border-top: 1px solid {PALETTE["border"]}; padding-top: 1rem;"></div>',
                 unsafe_allow_html=True)
-    if st.button("Actualizar datos", use_container_width=True):
+    if st.button("Actualizar datos", width="stretch"):
         load_data.clear()
         st.rerun()
-    st.button("Limpiar filtros", use_container_width=True,
+    st.button("Limpiar filtros", width="stretch",
               on_click=_clear_filters, key="clear_sidebar")
 
 # Sync URL query params
@@ -272,8 +274,39 @@ if filtro_departamentos and df_proy_side is not None and len(df_proy_side) == 0 
         and df_proyectos_full is not None and not df_proyectos_full.empty:
     st.info("Los departamentos seleccionados no tienen proyectos en el dataset de proyectos.")
 
-tab_resumen, tab_territorio, tab_detalles, tab_proyectos = st.tabs(
-    ["Resumen", "Territorio", "Detalles", "Proyectos"]
+# --- Load giros/pagos once (shared by the Flujo de caja tab) ---
+with st.spinner("Cargando giros y pagos SGR..."):
+    giros_result = load_giros()
+
+if giros_result is not None and not giros_result[0].empty:
+    df_giros_full, giros_rows = giros_result
+else:
+    df_giros_full, giros_rows = None, 0
+
+
+def _filter_giros_by_side(df):
+    """Apply the sidebar fondo / departamento / entidad / búsqueda filters to a
+    giros frame. Giros shares g4qj's exact naming (entity names match byte-for-byte
+    — suffix and all, verified 100% overlap), so .isin matches across both datasets
+    and the entidad filter stays consistent with the rest of the dashboard."""
+    if df is None:
+        return None
+    out = df
+    if filtro_fondos:
+        out = out[out["nombrefondo"].isin(filtro_fondos)]
+    if filtro_departamentos:
+        out = out[out["nombredepartamento"].isin(filtro_departamentos)]
+    if filtro_entidades:
+        out = out[out["nombreentidad"].isin(filtro_entidades)]
+    if busqueda_texto:
+        out = out[out["nombreentidad"].str.contains(busqueda_texto, case=False, na=False)]
+    return out.copy()
+
+
+df_giros = _filter_giros_by_side(df_giros_full)
+
+tab_resumen, tab_flujo, tab_territorio, tab_detalles, tab_proyectos = st.tabs(
+    ["Resumen", "Flujo de caja", "Territorio", "Detalles", "Proyectos"]
 )
 
 # ===== TAB 1: RESUMEN EJECUTIVO =====
@@ -320,7 +353,7 @@ with tab_resumen:
                 unsafe_allow_html=True)
     hero_fig = create_presupuesto_vs_saldo_chart(df_filtrado, top_n=10)
     if hero_fig:
-        st.plotly_chart(hero_fig, use_container_width=True)
+        st.plotly_chart(hero_fig, width="stretch")
     else:
         st.info("No hay datos suficientes para generar el chart.")
 
@@ -330,14 +363,14 @@ with tab_resumen:
         st.markdown(section_title("Menor ejecucion"), unsafe_allow_html=True)
         bottom_fig = create_bottom_ejecucion_chart(df_filtrado, bottom_n=5)
         if bottom_fig:
-            st.plotly_chart(bottom_fig, use_container_width=True)
+            st.plotly_chart(bottom_fig, width="stretch")
         else:
             st.caption("Sin datos.")
     with col_right:
         st.markdown(section_title("Distribucion por fondo"), unsafe_allow_html=True)
         pie_chart = create_fondo_pie_chart(df_filtrado)
         if pie_chart:
-            st.plotly_chart(pie_chart, use_container_width=True)
+            st.plotly_chart(pie_chart, width="stretch")
 
     # Download CTA
     st.markdown(
@@ -354,7 +387,7 @@ with tab_resumen:
             file_name=f"SGR_datos_filtrados_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
     with c_pad:
         st.markdown(
@@ -363,6 +396,97 @@ with tab_resumen:
             f'</div>',
             unsafe_allow_html=True,
         )
+
+# ===== TAB: FLUJO DE CAJA (giros/pagos e624-d9uy) =====
+with tab_flujo:
+    st.caption(
+        "Fuente: giros y pagos SGR (dataset `e624-d9uy`), misma vigencia 2025-26 y mismo "
+        "grano (fondo / departamento / entidad) que las asignaciones — el presupuesto "
+        "reconcilia con el Resumen. Muestra el **desembolso real**: del presupuesto, cuánto "
+        "se recaudó, cuánto se aprobó y cuánto efectivamente se **pagó**; el resto queda en caja."
+    )
+    if df_giros is None or df_giros.empty:
+        st.warning("No hay datos de giros y pagos con los filtros actuales.")
+    else:
+        presupuesto_g = df_giros["presupuestosgrinversion"].sum()
+        recaudo = df_giros["valorrecaudo"].sum()
+        aprobado_g = df_giros["recursosaprobadosasignadosspgr"].sum()
+        pagado = df_giros["totalpagado"].sum()
+        caja = df_giros["saldocaja"].sum()
+        pct_pagado = (pagado / recaudo * 100) if recaudo > 0 else 0
+
+        g1, g2, g3, g4 = st.columns(4)
+        with g1:
+            st.markdown(kpi_card("Recaudo", format_currency(recaudo)), unsafe_allow_html=True)
+        with g2:
+            st.markdown(kpi_card("Aprobado", format_currency(aprobado_g)), unsafe_allow_html=True)
+        with g3:
+            st.markdown(kpi_card("Pagado", format_currency(pagado)), unsafe_allow_html=True)
+        with g4:
+            st.markdown(kpi_card("Saldo en caja", format_currency(caja)), unsafe_allow_html=True)
+
+        st.caption(
+            f"**Solo el {pct_pagado:.0f}% de lo recaudado se ha pagado.** "
+            f"Quedan {format_currency_md(caja)} en caja sin ejecutar."
+        )
+
+        # Magnitudes (NOT a funnel): aprobado is accumulated/cross-vigency and can
+        # exceed recaudo, so independent bars are honest and filter-robust.
+        st.markdown(section_title("Presupuesto, recaudo, aprobado y pago"),
+                    unsafe_allow_html=True)
+        st.caption(
+            "Magnitudes comparadas (el % es respecto al presupuesto). **No es una "
+            "cascada estricta**: el *aprobado* es acumulado e incluye compromisos de "
+            "vigencias anteriores, por lo que puede superar al recaudo y no es un "
+            f"subconjunto de él. La señal sólida: de lo recaudado, **solo el "
+            f"{pct_pagado:.0f}%** se ha pagado."
+        )
+        flujo_fig = create_giros_flujo_chart([
+            ("Presupuesto", presupuesto_g), ("Recaudo", recaudo),
+            ("Aprobado", aprobado_g), ("Pagado", pagado),
+        ])
+        if flujo_fig:
+            st.plotly_chart(flujo_fig, width="stretch")
+
+        # Honest note: how much of the idle cash sits in national OTROS bolsas.
+        cat_g = (df_giros["nombredepartamento"].astype(str).str.upper().str.strip()
+                 .isin(CATCHALL_NAMES))
+        caja_otros = df_giros.loc[cat_g, "saldocaja"].sum()
+        if caja > 0 and caja_otros > 0:
+            st.caption(
+                f"De los {format_currency_md(caja)} en caja, {format_currency_md(caja_otros)} "
+                f"({caja_otros / caja * 100:.0f}%) están en bolsas nacionales OTROS / sin "
+                f"territorializar."
+            )
+
+        # Where is the cash stuck — by department.
+        st.markdown(section_title("¿Dónde está la plata en caja?"), unsafe_allow_html=True)
+        st.caption(
+            "Top departamentos por saldo en caja: lo **pagado** (azul) y lo que sigue "
+            "**en caja** (ámbar), lado a lado. Son cifras reportadas por separado — el "
+            "saldo en caja no es exactamente recaudo menos pagado."
+        )
+        dept_fig = create_giros_dept_chart(df_giros, top_n=10)
+        if dept_fig:
+            st.plotly_chart(dept_fig, width="stretch")
+        else:
+            st.caption("Sin departamentos territorializados con saldo en caja en la selección.")
+
+        # Download
+        excel_g = convert_df_to_excel(df_giros)
+        ts_g = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.download_button(
+            label="Descargar giros y pagos (Excel)",
+            data=excel_g,
+            file_name=f"SGR_giros_{ts_g}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_giros",
+        )
+        st.caption(
+            f"Total filas cargadas: {giros_rows:,}  ·  "
+            f"Fuente: datos.gov.co (giros y pagos SGR, e624-d9uy)"
+        )
+
 
 # ===== TAB: TERRITORIO (cross-dataset value) =====
 # Analyst-chosen thresholds (single source of truth for both the logic and the
@@ -440,7 +564,7 @@ with tab_territorio:
             )
             sc = create_territorio_scatter(terr, nat_fin)
             if sc:
-                st.plotly_chart(sc, use_container_width=True)
+                st.plotly_chart(sc, width="stretch")
 
             # --- Decision table ---
             st.markdown(section_title("Tabla de decisión por departamento"), unsafe_allow_html=True)
@@ -457,7 +581,7 @@ with tab_territorio:
                 "valor_activos", "ejec_fis", "ejec_fin", "delta_nac", "n_desaprobados",
             ]]
             st.dataframe(
-                tbl, hide_index=True, use_container_width=True, height=430,
+                tbl, hide_index=True, width="stretch", height=430,
                 column_config={
                     "depto": st.column_config.Column("Departamento"),
                     "presupuesto": st.column_config.NumberColumn("Presupuesto 25-26", format="dollar"),
@@ -481,7 +605,7 @@ with tab_territorio:
             )
             bm = create_benchmark_chart(terr, nat_fin)
             if bm:
-                st.plotly_chart(bm, use_container_width=True)
+                st.plotly_chart(bm, width="stretch")
 
             # --- Audit red-flag panels ---
             st.markdown(section_title("Alertas de auditoría"), unsafe_allow_html=True)
@@ -509,7 +633,7 @@ with tab_territorio:
                     "ejecucionfisica", "ejecucionfinanciera", "gap",
                 ] if c in pa.columns]
                 st.dataframe(
-                    pa[pa_cols].head(20), hide_index=True, use_container_width=True, height=360,
+                    pa[pa_cols].head(20), hide_index=True, width="stretch", height=360,
                     column_config={
                         "codigobpin": st.column_config.Column("BPIN"),
                         "nombre": st.column_config.Column("Proyecto"),
@@ -538,7 +662,7 @@ with tab_territorio:
                 zby = zombies_by_year(df_proy_side, before_year=ZOMBIE_YEAR, z=zb)
                 zfig = create_zombie_year_chart(zby)
                 if zfig:
-                    st.plotly_chart(zfig, use_container_width=True)
+                    st.plotly_chart(zfig, width="stretch")
 
             # 3) DESAPROBADO concentration
             st.markdown(
@@ -556,7 +680,7 @@ with tab_territorio:
                 )
                 dfig = create_desaprobado_chart(dby)
                 if dfig:
-                    st.plotly_chart(dfig, use_container_width=True)
+                    st.plotly_chart(dfig, width="stretch")
 
 
 # ===== TAB 2: DETALLES =====
@@ -669,7 +793,7 @@ with tab_detalles:
                 datos_fondo, rank_col, rank_label, top_n=top_n
             )
             if rank_fig:
-                st.plotly_chart(rank_fig, use_container_width=True)
+                st.plotly_chart(rank_fig, width="stretch")
             else:
                 st.caption("Sin entidades territorializadas para rankear en este fondo.")
 
@@ -696,7 +820,7 @@ with tab_detalles:
                     datos_fondo, tree_col, tree_label, drop_catchall=tree_drop_catchall
                 )
             if hierarchy_fig:
-                st.plotly_chart(hierarchy_fig, use_container_width=True)
+                st.plotly_chart(hierarchy_fig, width="stretch")
             else:
                 st.caption("Sin desglose territorial para este fondo.")
 
@@ -704,7 +828,7 @@ with tab_detalles:
         vigencia_fig = create_vigencia_chart(df_filtrado)
         if vigencia_fig:
             st.markdown(section_title("Presupuesto por vigencia"), unsafe_allow_html=True)
-            st.plotly_chart(vigencia_fig, use_container_width=True)
+            st.plotly_chart(vigencia_fig, width="stretch")
 
         # --- Tabla: filtrada por fondo seleccionado ---
         st.markdown(section_title(f"Tabla de datos · {fondo_sel}"), unsafe_allow_html=True)
@@ -720,7 +844,7 @@ with tab_detalles:
             if col not in column_config and col in COLUMN_LABELS:
                 column_config[col] = st.column_config.Column(COLUMN_LABELS[col])
         st.dataframe(
-            df_tabla, use_container_width=True, height=420, column_config=column_config,
+            df_tabla, width="stretch", height=420, column_config=column_config,
             hide_index=True,
         )
 
@@ -743,7 +867,7 @@ with tab_detalles:
                     for col in df_filtrado.columns
                 ]
             )
-            st.dataframe(glosario, hide_index=True, use_container_width=True)
+            st.dataframe(glosario, hide_index=True, width="stretch")
             st.caption(
                 f"Total filas cargadas: {rows_fetched:,}  ·  "
                 f"Fuente: datos.gov.co (Sistema General de Regalias)"
@@ -844,26 +968,26 @@ with tab_proyectos:
                 st.markdown(section_title("Proyectos por sector"), unsafe_allow_html=True)
                 sector_fig = create_proyectos_sector_donut(df_proyectos, top_n=8)
                 if sector_fig:
-                    st.plotly_chart(sector_fig, use_container_width=True)
+                    st.plotly_chart(sector_fig, width="stretch")
             with c2:
                 st.markdown(section_title("Estado"), unsafe_allow_html=True)
                 estado_fig = create_proyectos_estado_chart(df_proyectos)
                 if estado_fig:
-                    st.plotly_chart(estado_fig, use_container_width=True)
+                    st.plotly_chart(estado_fig, width="stretch")
 
             # Top entidades
             st.markdown(section_title("Top 10 entidades ejecutoras por valor"),
                         unsafe_allow_html=True)
             top_ent_fig = create_proyectos_top_entidades_chart(df_proyectos, top_n=10)
             if top_ent_fig:
-                st.plotly_chart(top_ent_fig, use_container_width=True)
+                st.plotly_chart(top_ent_fig, width="stretch")
 
             # Scatter ejecucion
             st.markdown(section_title("Ejecucion fisica vs financiera"),
                         unsafe_allow_html=True)
             exec_fig = create_proyectos_ejecucion_chart(df_proyectos)
             if exec_fig:
-                st.plotly_chart(exec_fig, use_container_width=True)
+                st.plotly_chart(exec_fig, width="stretch")
 
             # Tabla
             st.markdown(section_title("Proyectos"), unsafe_allow_html=True)
@@ -896,7 +1020,7 @@ with tab_proyectos:
                 if col in df_tabla_p.columns and col not in col_cfg_p:
                     col_cfg_p[col] = st.column_config.Column(label)
             st.dataframe(
-                df_tabla_p, use_container_width=True, height=420,
+                df_tabla_p, width="stretch", height=420,
                 column_config=col_cfg_p, hide_index=True,
             )
 

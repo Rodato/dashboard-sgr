@@ -13,6 +13,7 @@ from dashboard_sgr.config import (
     API_ROW_LIMIT,
     CACHE_TTL,
     DATASET_ID,
+    DATASET_ID_GIROS,
     DATASET_ID_PROYECTOS,
     DEPT_NAME_MAPPING,
     GEOJSON_LOCAL_PATH,
@@ -274,4 +275,51 @@ def load_proyectos():
                 time.sleep(API_RETRY_BACKOFF * attempt)
             else:
                 st.error(f"Error al cargar proyectos tras {API_MAX_RETRIES} intentos: {e}")
+                return pd.DataFrame(), 0
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def load_giros():
+    """Fetch giros/pagos (e624-d9uy) from Socrata with pagination + retry.
+
+    Shares g4qj-2p2e's grain and naming (vigencia / fondo / departamento /
+    entidad) and reconciles on presupuesto (~$57.4T), so it joins cleanly. Adds
+    the real disbursement chain: valorrecaudo (collected), totalpagado (actually
+    paid out) and saldocaja (cash sitting idle). Returns (DataFrame, rows_fetched)
+    with monetary columns coerced; bad cells become NaN (skipped by sums).
+    """
+    for attempt in range(1, API_MAX_RETRIES + 1):
+        try:
+            client = Socrata(SOCRATA_DOMAIN, None)
+            all_results = []
+            offset = 0
+            while True:
+                batch = client.get(DATASET_ID_GIROS, limit=API_ROW_LIMIT, offset=offset)
+                if not batch:
+                    break
+                all_results.extend(batch)
+                if len(batch) < API_ROW_LIMIT:
+                    break
+                offset += API_ROW_LIMIT
+
+            df = pd.DataFrame.from_records(all_results)
+            rows_fetched = len(df)
+            if df.empty:
+                return df, 0
+
+            for col in [
+                "presupuestosgrinversion", "valorrecaudo",
+                "recursosaprobadosasignadosspgr", "totalpagado",
+                "saldocaja", "cajadisponibledescontand",
+            ]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            return df, rows_fetched
+
+        except Exception as e:
+            if attempt < API_MAX_RETRIES:
+                time.sleep(API_RETRY_BACKOFF * attempt)
+            else:
+                st.error(f"Error al cargar giros tras {API_MAX_RETRIES} intentos: {e}")
                 return pd.DataFrame(), 0
