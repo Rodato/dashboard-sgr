@@ -28,6 +28,29 @@ COLUMNS_TO_EXCLUDE = [
 # Rankings exclude these to avoid swamping real top entries.
 CATCHALL_NAMES = {"OTROS", "SIN UBICACION", "SIN UBICACIÓN"}
 
+# --- Cross-dataset (asignaciones <-> proyectos) department matching ---
+# The two datasets spell departments differently: asignaciones uses accented,
+# full names ("VALLE DEL CAUCA", "ARCHIPIÉLAGO DE SAN ANDRÉS"); proyectos uses
+# accent-stripped short names ("VALLE", "SAN ANDRES"). norm_dept() upper-cases
+# and strips accents; these aliases reconcile the remaining naming gaps so the
+# department-level join reaches 100% of territorial budget.
+DEPT_ALIAS = {
+    "VALLE DEL CAUCA": "VALLE",
+    "ARCHIPIELAGO DE SAN ANDRES": "SAN ANDRES",
+}
+
+# Normalized (upper, accent-stripped) buckets that are NOT real departments and
+# must be excluded from the territorial cross-analysis on either side.
+NON_TERRITORIAL = {
+    "OTROS", "SIN UBICACION", "OTRAS CORPORACIONES",
+    "CORPMAGDALENA", "NINGUNO", "NAN", "NONE", "",
+}
+
+# estado value (with accent) used across the proyectos dataset.
+ESTADO_EN_EJECUCION = "EN EJECUCIÓN"
+ESTADO_TERMINADO = "TERMINADO"
+ESTADO_DESAPROBADO = "DESAPROBADO"
+
 # Monetary columns for formatting
 MONETARY_COLUMNS = [
     "presupuestosgrinversion",

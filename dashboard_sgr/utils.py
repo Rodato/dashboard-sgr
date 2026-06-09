@@ -2,6 +2,9 @@ import io
 import unicodedata
 
 import pandas as pd
+import streamlit as st
+
+from dashboard_sgr.config import CACHE_TTL, DEPT_ALIAS
 
 
 def strip_accents(text):
@@ -11,6 +14,19 @@ def strip_accents(text):
     return "".join(
         c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
     )
+
+
+def norm_dept(name):
+    """Normalize a department name for cross-dataset joins.
+
+    Upper-cases, strips accents and surrounding whitespace, then applies the
+    DEPT_ALIAS map so the asignaciones and proyectos datasets line up. Returns
+    None for non-strings (NaN) so they can be dropped before joining.
+    """
+    if not isinstance(name, str):
+        return None
+    n = strip_accents(name.upper().strip())
+    return DEPT_ALIAS.get(n, n)
 
 
 def short_fondo_name(name, max_len=40):
@@ -73,8 +89,13 @@ def aggregate_sgr_data(df, group_cols):
     }).reset_index()
 
 
+@st.cache_data(ttl=CACHE_TTL)
 def convert_df_to_excel(df):
-    """Convert a DataFrame to Excel bytes for download."""
+    """Convert a DataFrame to Excel bytes for download.
+
+    Cached because st.download_button materializes the bytes on every rerun;
+    openpyxl serialization of the larger frames costs ~1s otherwise.
+    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Datos_SGR", float_format="%.2f")

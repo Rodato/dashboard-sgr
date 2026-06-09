@@ -5,11 +5,14 @@ from datetime import datetime
 from dashboard_sgr.config import (
     COLUMN_LABELS,
     COLUMNS_TO_EXCLUDE,
+    ESTADO_EN_EJECUCION,
     MONETARY_COLUMNS,
 )
 from dashboard_sgr.data import load_data, load_proyectos
 from dashboard_sgr.charts import (
+    create_benchmark_chart,
     create_bottom_ejecucion_chart,
+    create_desaprobado_chart,
     create_fondo_pie_chart,
     create_presupuesto_vs_saldo_chart,
     create_proyectos_ejecucion_chart,
@@ -18,11 +21,22 @@ from dashboard_sgr.charts import (
     create_proyectos_top_entidades_chart,
     create_saldo_pendiente_chart,
     create_sunburst_chart,
+    create_territorio_scatter,
     create_treemap_chart,
     create_vigencia_chart,
+    create_zombie_year_chart,
+)
+from dashboard_sgr.analytics import (
+    desaprobado_by_dept,
+    national_execution,
+    paying_ahead,
+    territorialize,
+    territorio_join,
+    zombies,
+    zombies_by_year,
 )
 from dashboard_sgr.theme import CUSTOM_CSS, PALETTE, kpi_card, section_title
-from dashboard_sgr.utils import convert_df_to_excel, format_currency
+from dashboard_sgr.utils import convert_df_to_excel, format_currency, norm_dept
 
 # --- Page config ---
 st.set_page_config(
@@ -199,7 +213,39 @@ if len(df_filtrado) == 0:
     st.warning("No se encontraron datos con los filtros seleccionados. Ajusta los filtros en la barra lateral.")
     st.stop()
 
-tab_resumen, tab_detalles, tab_proyectos = st.tabs(["Resumen", "Detalles", "Proyectos"])
+# --- Load proyectos once (shared by Territorio + Proyectos tabs) ---
+# st.tabs renders every tab body each rerun, so proyectos loads regardless of
+# the active tab anyway; loading here lets both tabs reuse one cached fetch.
+with st.spinner("Cargando proyectos SGR..."):
+    proyectos_result = load_proyectos()
+
+if proyectos_result is not None and not proyectos_result[0].empty:
+    df_proyectos_full, proyectos_rows = proyectos_result
+else:
+    df_proyectos_full, proyectos_rows = None, 0
+
+
+def _filter_proyectos_by_side(df):
+    """Apply the sidebar department filter to a proyectos frame using the
+    normalized department key (accent/alias-aware) so depto names that differ
+    between datasets (VALLE DEL CAUCA vs VALLE, etc.) still match."""
+    if df is None:
+        return None
+    if filtro_departamentos and "departamento" in df.columns:
+        keys = {norm_dept(d) for d in filtro_departamentos}
+        return df[df["departamento"].map(norm_dept).isin(keys)].copy()
+    return df.copy()
+
+
+df_proy_side = _filter_proyectos_by_side(df_proyectos_full)
+# Warn when a department selection silently yields zero projects (a join miss).
+if filtro_departamentos and df_proy_side is not None and len(df_proy_side) == 0 \
+        and df_proyectos_full is not None and not df_proyectos_full.empty:
+    st.info("Los departamentos seleccionados no tienen proyectos en el dataset de proyectos.")
+
+tab_resumen, tab_territorio, tab_detalles, tab_proyectos = st.tabs(
+    ["Resumen", "Territorio", "Detalles", "Proyectos"]
+)
 
 # ===== TAB 1: RESUMEN EJECUTIVO =====
 with tab_resumen:
@@ -271,6 +317,201 @@ with tab_resumen:
             f'</div>',
             unsafe_allow_html=True,
         )
+
+# ===== TAB: TERRITORIO (cross-dataset value) =====
+# Analyst-chosen thresholds (single source of truth for both the logic and the
+# captions so they never drift apart).
+GAP_PP = 20          # paying-ahead: financiera - física, en puntos porcentuales
+ZOMBIE_YEAR = 2020   # zombie: proyectos formulados antes de este año BPIN
+
+with tab_territorio:
+    st.caption(
+        "Cruce de las dos fuentes: **presupuesto asignado 2025-26** (asignaciones por fondo) "
+        "frente a la **cartera de proyectos** que se ejecuta en el territorio (DNP-ProyectosSGR, "
+        "histórico). Son horizontes distintos —el presupuesto es la nueva vigencia; los proyectos "
+        "son el acumulado—, leelos como *cuánta plata nueva llega vs. qué capacidad de ejecución "
+        "tiene ese territorio*."
+    )
+
+    if df_proy_side is None or df_proy_side.empty:
+        st.warning("No hay datos de proyectos para el cruce territorial con los filtros actuales.")
+    else:
+        terr = territorio_join(df_filtrado, df_proy_side)
+        # Benchmark reference is the TRUE national average (full portfolio,
+        # territorialized, project-grain) so it stays fixed under a depto filter.
+        nat_fis, nat_fin = national_execution(df_proyectos_full)
+        pa = paying_ahead(df_proy_side, gap_pp=GAP_PP)
+        zb = zombies(df_proy_side, before_year=ZOMBIE_YEAR)
+
+        if terr.empty:
+            st.warning("Sin departamentos con presupuesto y proyectos para cruzar.")
+        else:
+            # Distinct (project-grain) active set within the territorialized selection.
+            act_terr = territorialize(df_proy_side)
+            act_terr = act_terr[act_terr["estado"] == ESTADO_EN_EJECUCION].drop_duplicates("codigobpin")
+            # Alerts: union of distinct flagged projects (some are both).
+            n_alertas = len(pa.index.union(zb.index))
+
+            # --- KPIs ---
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                st.markdown(kpi_card("Departamentos", f"{len(terr)}"), unsafe_allow_html=True)
+            with k2:
+                st.markdown(
+                    kpi_card("Presup. territorializado", format_currency(terr["presupuesto"].sum())),
+                    unsafe_allow_html=True,
+                )
+            with k3:
+                st.markdown(
+                    kpi_card("Proyectos activos", f"{len(act_terr):,}"),
+                    unsafe_allow_html=True,
+                )
+            with k4:
+                st.markdown(kpi_card("Alertas de auditoría", f"{n_alertas:,}"), unsafe_allow_html=True)
+
+            # --- Honest disclosure of what the cross leaves out ---
+            total_pto = df_filtrado["presupuestosgrinversion"].sum()
+            terr_pto = terr["presupuesto"].sum()
+            pct_excl = ((total_pto - terr_pto) / total_pto * 100) if total_pto else 0
+            excl_proy = df_proy_side[~df_proy_side.index.isin(territorialize(df_proy_side).index)]
+            n_excl = excl_proy["codigobpin"].nunique()
+            v_excl = excl_proy.drop_duplicates("codigobpin")["valortotal"].sum()
+            st.caption(
+                f"Territorializa **{format_currency(terr_pto)}** de {format_currency(total_pto)} del "
+                f"presupuesto ({pct_excl:.0f}% queda en bolsas no territorializables: OTROS / corporaciones "
+                f"/ sin ubicación). Del lado de proyectos se excluyen {n_excl:,} sin departamento "
+                f"identificable ({format_currency(v_excl)}); sí cuentan en la pestaña Proyectos."
+            )
+
+            # --- Hero: money-in vs delivery ---
+            st.markdown(section_title("Plata asignada vs. ejecución en el territorio"),
+                        unsafe_allow_html=True)
+            st.caption(
+                "Cada burbuja es un departamento · Eje X: presupuesto 2025-26 · Eje Y: ejecución "
+                "financiera promedio de sus proyectos activos · Tamaño: valor acumulado de la cartera "
+                "activa (todas las vigencias; proyectos multi-departamento cuentan en cada territorio). "
+                "Abajo-derecha (mucha plata nueva, baja ejecución) = vigilar."
+            )
+            sc = create_territorio_scatter(terr, nat_fin)
+            if sc:
+                st.plotly_chart(sc, use_container_width=True)
+
+            # --- Decision table ---
+            st.markdown(section_title("Tabla de decisión por departamento"), unsafe_allow_html=True)
+            tbl = terr.copy()
+            # Nullable Float64 so departments with no active projects render blank
+            # (not 'nan') in the execution/delta columns.
+            for c in ["ejec_fis", "ejec_fin"]:
+                tbl[c] = tbl[c].astype("Float64")
+            tbl["delta_nac"] = (tbl["ejec_fin"] - nat_fin).astype("Float64")
+            no_active = tbl["n_activos"] == 0
+            tbl.loc[no_active, ["ejec_fis", "ejec_fin", "delta_nac"]] = pd.NA
+            tbl = tbl[[
+                "depto", "presupuesto", "aprobado", "n_proy", "n_activos",
+                "valor_activos", "ejec_fis", "ejec_fin", "delta_nac", "n_desaprobados",
+            ]]
+            st.dataframe(
+                tbl, hide_index=True, use_container_width=True, height=430,
+                column_config={
+                    "depto": st.column_config.Column("Departamento"),
+                    "presupuesto": st.column_config.NumberColumn("Presupuesto 25-26", format="dollar"),
+                    "aprobado": st.column_config.NumberColumn("Aprobado", format="dollar"),
+                    "n_proy": st.column_config.NumberColumn("Proyectos", format="%d"),
+                    "n_activos": st.column_config.NumberColumn("Activos", format="%d"),
+                    "valor_activos": st.column_config.NumberColumn("Valor en ejecución", format="dollar"),
+                    "ejec_fis": st.column_config.NumberColumn("% Físico", format="%.0f%%"),
+                    "ejec_fin": st.column_config.NumberColumn("% Financiero", format="%.0f%%"),
+                    "delta_nac": st.column_config.NumberColumn("vs Nacional", format="%+.0f pp",
+                        help="Puntos de ejecución financiera (activos) frente al promedio nacional"),
+                    "n_desaprobados": st.column_config.NumberColumn("Desaprob.", format="%d"),
+                },
+            )
+
+            # --- Benchmark vs national ---
+            st.markdown(section_title("Ejecución vs. promedio nacional"), unsafe_allow_html=True)
+            st.caption(
+                f"Promedio simple por proyecto (no ponderado por valor). Referencia nacional: "
+                f"{nat_fin:.0f}% financiera · {nat_fis:.0f}% física (proyectos activos)."
+            )
+            bm = create_benchmark_chart(terr, nat_fin)
+            if bm:
+                st.plotly_chart(bm, use_container_width=True)
+
+            # --- Audit red-flag panels ---
+            st.markdown(section_title("Alertas de auditoría"), unsafe_allow_html=True)
+            st.caption(
+                f"Umbrales elegidos por el analista (ajustables): brecha financiera−física > {GAP_PP} pp · "
+                f"proyectos formulados antes de {ZOMBIE_YEAR}. Cifras a nivel de proyecto único."
+            )
+
+            # 1) Paying ahead of delivery
+            st.markdown(
+                f'<div style="color:{PALETTE["primary_dark"]}; font-weight:600; margin:0.5rem 0;">'
+                f'Se paga por delante de la obra</div>',
+                unsafe_allow_html=True,
+            )
+            if pa.empty:
+                st.caption("Sin proyectos con la ejecución financiera muy por delante de la física.")
+            else:
+                st.caption(
+                    f"**{len(pa):,}** proyectos en ejecución con la financiera más de {GAP_PP} pp por encima "
+                    f"de la física ({format_currency(pa['valortotal'].sum())} en valor total de los proyectos "
+                    f"señalados) — candidatos prioritarios de auditoría. Top 20 por valor:"
+                )
+                pa_cols = [c for c in [
+                    "codigobpin", "nombre", "departamento", "valortotal",
+                    "ejecucionfisica", "ejecucionfinanciera", "gap",
+                ] if c in pa.columns]
+                st.dataframe(
+                    pa[pa_cols].head(20), hide_index=True, use_container_width=True, height=360,
+                    column_config={
+                        "codigobpin": st.column_config.Column("BPIN"),
+                        "nombre": st.column_config.Column("Proyecto"),
+                        "departamento": st.column_config.Column("Departamento"),
+                        "valortotal": st.column_config.NumberColumn("Valor total", format="dollar"),
+                        # NumberColumn (not Progress) so values >100% read literally.
+                        "ejecucionfisica": st.column_config.NumberColumn("% Físico", format="%.0f%%"),
+                        "ejecucionfinanciera": st.column_config.NumberColumn("% Financiero", format="%.0f%%"),
+                        "gap": st.column_config.NumberColumn("Brecha", format="%.0f pp"),
+                    },
+                )
+
+            # 2) Zombie projects (stalled vintages)
+            st.markdown(
+                f'<div style="color:{PALETTE["primary_dark"]}; font-weight:600; margin:1rem 0 0.5rem 0;">'
+                f'Proyectos zombie (formulados antes de {ZOMBIE_YEAR}, aún en ejecución)</div>',
+                unsafe_allow_html=True,
+            )
+            if zb.empty:
+                st.caption(f"Sin proyectos en ejecución formulados antes de {ZOMBIE_YEAR}.")
+            else:
+                st.caption(
+                    f"**{len(zb):,}** proyectos formulados antes de {ZOMBIE_YEAR} siguen *en ejecución* "
+                    f"({format_currency(zb['valortotal'].sum())} comprometidos que no terminan de aterrizar)."
+                )
+                zby = zombies_by_year(df_proy_side, before_year=ZOMBIE_YEAR, z=zb)
+                zfig = create_zombie_year_chart(zby)
+                if zfig:
+                    st.plotly_chart(zfig, use_container_width=True)
+
+            # 3) DESAPROBADO concentration
+            st.markdown(
+                f'<div style="color:{PALETTE["primary_dark"]}; font-weight:600; margin:1rem 0 0.5rem 0;">'
+                f'Concentración de proyectos desaprobados</div>',
+                unsafe_allow_html=True,
+            )
+            dby = desaprobado_by_dept(df_proy_side, top_n=10)
+            if dby is None or dby.empty:
+                st.caption("Sin proyectos desaprobados en la selección.")
+            else:
+                st.caption(
+                    "Departamentos con mayor valor de proyectos desaprobados — señal de dónde falla "
+                    "la formulación/aprobación y se necesita fortalecimiento de capacidades."
+                )
+                dfig = create_desaprobado_chart(dby)
+                if dfig:
+                    st.plotly_chart(dfig, use_container_width=True)
+
 
 # ===== TAB 2: DETALLES =====
 with tab_detalles:
@@ -399,22 +640,12 @@ with tab_proyectos:
         "por fondo/vigencia del resto del dashboard."
     )
 
-    with st.spinner("Cargando proyectos SGR..."):
-        proyectos_result = load_proyectos()
-
-    if proyectos_result is None or proyectos_result[0].empty:
+    if df_proyectos_full is None or df_proyectos_full.empty:
         st.error("No se pudieron cargar los proyectos.")
     else:
-        df_proyectos_raw, proyectos_rows = proyectos_result
-
-        # Aplicar filtro de departamento del sidebar (si hay seleccion)
-        if filtro_departamentos and "departamento" in df_proyectos_raw.columns:
-            deptos_norm = {d.upper().strip() for d in filtro_departamentos}
-            df_proyectos = df_proyectos_raw[
-                df_proyectos_raw["departamento"].str.upper().str.strip().isin(deptos_norm)
-            ].copy()
-        else:
-            df_proyectos = df_proyectos_raw.copy()
+        # Reutiliza la carga compartida, ya filtrada por el departamento del sidebar
+        # (con coincidencia normalizada de nombres — ver _filter_proyectos_by_side).
+        df_proyectos = df_proy_side.copy() if df_proy_side is not None else df_proyectos_full.copy()
 
         # Filtros locales de proyectos
         fc1, fc2 = st.columns(2)
@@ -550,8 +781,7 @@ with tab_proyectos:
             )
 
             # Descarga
-            from dashboard_sgr.utils import convert_df_to_excel as _to_excel_p
-            excel_p = _to_excel_p(df_proyectos)
+            excel_p = convert_df_to_excel(df_proyectos)
             ts_p = datetime.now().strftime("%Y%m%d_%H%M%S")
             st.download_button(
                 label="Descargar proyectos filtrados (Excel)",
