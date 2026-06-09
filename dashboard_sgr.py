@@ -178,10 +178,10 @@ busqueda_texto = st.sidebar.text_input(
 with st.sidebar:
     st.markdown(f'<div style="margin-top: 1rem; border-top: 1px solid {PALETTE["border"]}; padding-top: 1rem;"></div>',
                 unsafe_allow_html=True)
-    if st.button("Actualizar datos", use_container_width=True):
+    if st.button("Actualizar datos", width="stretch"):
         load_data.clear()
         st.rerun()
-    st.button("Limpiar filtros", use_container_width=True,
+    st.button("Limpiar filtros", width="stretch",
               on_click=_clear_filters, key="clear_sidebar")
 
 # Sync URL query params
@@ -320,7 +320,7 @@ with tab_resumen:
                 unsafe_allow_html=True)
     hero_fig = create_presupuesto_vs_saldo_chart(df_filtrado, top_n=10)
     if hero_fig:
-        st.plotly_chart(hero_fig, use_container_width=True)
+        st.plotly_chart(hero_fig, width="stretch")
     else:
         st.info("No hay datos suficientes para generar el chart.")
 
@@ -330,14 +330,14 @@ with tab_resumen:
         st.markdown(section_title("Menor ejecucion"), unsafe_allow_html=True)
         bottom_fig = create_bottom_ejecucion_chart(df_filtrado, bottom_n=5)
         if bottom_fig:
-            st.plotly_chart(bottom_fig, use_container_width=True)
+            st.plotly_chart(bottom_fig, width="stretch")
         else:
             st.caption("Sin datos.")
     with col_right:
         st.markdown(section_title("Distribucion por fondo"), unsafe_allow_html=True)
         pie_chart = create_fondo_pie_chart(df_filtrado)
         if pie_chart:
-            st.plotly_chart(pie_chart, use_container_width=True)
+            st.plotly_chart(pie_chart, width="stretch")
 
     # Download CTA
     st.markdown(
@@ -354,7 +354,7 @@ with tab_resumen:
             file_name=f"SGR_datos_filtrados_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
     with c_pad:
         st.markdown(
@@ -440,7 +440,7 @@ with tab_territorio:
             )
             sc = create_territorio_scatter(terr, nat_fin)
             if sc:
-                st.plotly_chart(sc, use_container_width=True)
+                st.plotly_chart(sc, width="stretch")
 
             # --- Decision table ---
             st.markdown(section_title("Tabla de decisión por departamento"), unsafe_allow_html=True)
@@ -457,7 +457,7 @@ with tab_territorio:
                 "valor_activos", "ejec_fis", "ejec_fin", "delta_nac", "n_desaprobados",
             ]]
             st.dataframe(
-                tbl, hide_index=True, use_container_width=True, height=430,
+                tbl, hide_index=True, width="stretch", height=430,
                 column_config={
                     "depto": st.column_config.Column("Departamento"),
                     "presupuesto": st.column_config.NumberColumn("Presupuesto 25-26", format="dollar"),
@@ -481,7 +481,7 @@ with tab_territorio:
             )
             bm = create_benchmark_chart(terr, nat_fin)
             if bm:
-                st.plotly_chart(bm, use_container_width=True)
+                st.plotly_chart(bm, width="stretch")
 
             # --- Audit red-flag panels ---
             st.markdown(section_title("Alertas de auditoría"), unsafe_allow_html=True)
@@ -509,7 +509,7 @@ with tab_territorio:
                     "ejecucionfisica", "ejecucionfinanciera", "gap",
                 ] if c in pa.columns]
                 st.dataframe(
-                    pa[pa_cols].head(20), hide_index=True, use_container_width=True, height=360,
+                    pa[pa_cols].head(20), hide_index=True, width="stretch", height=360,
                     column_config={
                         "codigobpin": st.column_config.Column("BPIN"),
                         "nombre": st.column_config.Column("Proyecto"),
@@ -538,7 +538,7 @@ with tab_territorio:
                 zby = zombies_by_year(df_proy_side, before_year=ZOMBIE_YEAR, z=zb)
                 zfig = create_zombie_year_chart(zby)
                 if zfig:
-                    st.plotly_chart(zfig, use_container_width=True)
+                    st.plotly_chart(zfig, width="stretch")
 
             # 3) DESAPROBADO concentration
             st.markdown(
@@ -556,7 +556,7 @@ with tab_territorio:
                 )
                 dfig = create_desaprobado_chart(dby)
                 if dfig:
-                    st.plotly_chart(dfig, use_container_width=True)
+                    st.plotly_chart(dfig, width="stretch")
 
 
 # ===== TAB 2: DETALLES =====
@@ -669,7 +669,7 @@ with tab_detalles:
                 datos_fondo, rank_col, rank_label, top_n=top_n
             )
             if rank_fig:
-                st.plotly_chart(rank_fig, use_container_width=True)
+                st.plotly_chart(rank_fig, width="stretch")
             else:
                 st.caption("Sin entidades territorializadas para rankear en este fondo.")
 
@@ -696,7 +696,7 @@ with tab_detalles:
                     datos_fondo, tree_col, tree_label, drop_catchall=tree_drop_catchall
                 )
             if hierarchy_fig:
-                st.plotly_chart(hierarchy_fig, use_container_width=True)
+                st.plotly_chart(hierarchy_fig, width="stretch")
             else:
                 st.caption("Sin desglose territorial para este fondo.")
 
@@ -704,7 +704,7 @@ with tab_detalles:
         vigencia_fig = create_vigencia_chart(df_filtrado)
         if vigencia_fig:
             st.markdown(section_title("Presupuesto por vigencia"), unsafe_allow_html=True)
-            st.plotly_chart(vigencia_fig, use_container_width=True)
+            st.plotly_chart(vigencia_fig, width="stretch")
 
         # --- Tabla: filtrada por fondo seleccionado ---
         st.markdown(section_title(f"Tabla de datos · {fondo_sel}"), unsafe_allow_html=True)
@@ -720,7 +720,7 @@ with tab_detalles:
             if col not in column_config and col in COLUMN_LABELS:
                 column_config[col] = st.column_config.Column(COLUMN_LABELS[col])
         st.dataframe(
-            df_tabla, use_container_width=True, height=420, column_config=column_config,
+            df_tabla, width="stretch", height=420, column_config=column_config,
             hide_index=True,
         )
 
@@ -743,7 +743,7 @@ with tab_detalles:
                     for col in df_filtrado.columns
                 ]
             )
-            st.dataframe(glosario, hide_index=True, use_container_width=True)
+            st.dataframe(glosario, hide_index=True, width="stretch")
             st.caption(
                 f"Total filas cargadas: {rows_fetched:,}  ·  "
                 f"Fuente: datos.gov.co (Sistema General de Regalias)"
@@ -844,26 +844,26 @@ with tab_proyectos:
                 st.markdown(section_title("Proyectos por sector"), unsafe_allow_html=True)
                 sector_fig = create_proyectos_sector_donut(df_proyectos, top_n=8)
                 if sector_fig:
-                    st.plotly_chart(sector_fig, use_container_width=True)
+                    st.plotly_chart(sector_fig, width="stretch")
             with c2:
                 st.markdown(section_title("Estado"), unsafe_allow_html=True)
                 estado_fig = create_proyectos_estado_chart(df_proyectos)
                 if estado_fig:
-                    st.plotly_chart(estado_fig, use_container_width=True)
+                    st.plotly_chart(estado_fig, width="stretch")
 
             # Top entidades
             st.markdown(section_title("Top 10 entidades ejecutoras por valor"),
                         unsafe_allow_html=True)
             top_ent_fig = create_proyectos_top_entidades_chart(df_proyectos, top_n=10)
             if top_ent_fig:
-                st.plotly_chart(top_ent_fig, use_container_width=True)
+                st.plotly_chart(top_ent_fig, width="stretch")
 
             # Scatter ejecucion
             st.markdown(section_title("Ejecucion fisica vs financiera"),
                         unsafe_allow_html=True)
             exec_fig = create_proyectos_ejecucion_chart(df_proyectos)
             if exec_fig:
-                st.plotly_chart(exec_fig, use_container_width=True)
+                st.plotly_chart(exec_fig, width="stretch")
 
             # Tabla
             st.markdown(section_title("Proyectos"), unsafe_allow_html=True)
@@ -896,7 +896,7 @@ with tab_proyectos:
                 if col in df_tabla_p.columns and col not in col_cfg_p:
                     col_cfg_p[col] = st.column_config.Column(label)
             st.dataframe(
-                df_tabla_p, use_container_width=True, height=420,
+                df_tabla_p, width="stretch", height=420,
                 column_config=col_cfg_p, hide_index=True,
             )
 
