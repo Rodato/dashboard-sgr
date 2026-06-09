@@ -3,6 +3,8 @@ import unicodedata
 
 import pandas as pd
 
+from dashboard_sgr.config import DEPT_ALIAS
+
 
 def strip_accents(text):
     """Strip diacritical marks (á→a, ñ→n) for fuzzy string matching."""
@@ -11,6 +13,19 @@ def strip_accents(text):
     return "".join(
         c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
     )
+
+
+def norm_dept(name):
+    """Normalize a department name for cross-dataset joins.
+
+    Upper-cases, strips accents and surrounding whitespace, then applies the
+    DEPT_ALIAS map so the asignaciones and proyectos datasets line up. Returns
+    None for non-strings (NaN) so they can be dropped before joining.
+    """
+    if not isinstance(name, str):
+        return None
+    n = strip_accents(name.upper().strip())
+    return DEPT_ALIAS.get(n, n)
 
 
 def short_fondo_name(name, max_len=40):

@@ -779,3 +779,163 @@ def create_proyectos_ejecucion_chart(df_proyectos):
     except Exception as e:
         st.error(f"Error al crear scatter de ejecucion: {e}")
         return None
+
+
+# ============================================================================
+# TERRITORIO (cross-dataset: asignaciones budget x proyectos delivery)
+# ============================================================================
+
+def create_territorio_scatter(j, nat_fin=None):
+    """Money-in-vs-delivery: x = budget assigned 2025-26, y = avg financial
+    execution of active projects, bubble = active pipeline value. Departments
+    bottom-right (big new money, weak active execution) are the watch list.
+    """
+    try:
+        d = j[(j["n_activos"] > 0) & (j["presupuesto"] > 0)].copy()
+        if d.empty:
+            return None
+        d["ejec_fin"] = d["ejec_fin"].fillna(0)
+        max_val = float(d["valor_activos"].max()) or 1.0
+        sizeref = 2.0 * max_val / (42.0 ** 2)
+
+        fig = go.Figure(go.Scatter(
+            x=d["presupuesto"],
+            y=d["ejec_fin"],
+            mode="markers+text",
+            text=d["depto"],
+            textposition="top center",
+            textfont={"size": 9, "color": PALETTE["text_muted"]},
+            marker={
+                "size": d["valor_activos"],
+                "sizemode": "area",
+                "sizeref": sizeref,
+                "sizemin": 4,
+                "color": d["ejec_fin"],
+                "colorscale": CHART_SCALE_BLUE,
+                "line": {"width": 1, "color": "#FFFFFF"},
+                "showscale": False,
+            },
+            customdata=d[["aprobado", "n_activos", "valor_activos", "ejec_fis"]].values,
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "Presupuesto 25-26: $%{x:,.0f}<br>"
+                "Aprobado: $%{customdata[0]:,.0f}<br>"
+                "Proyectos activos: %{customdata[1]:,} ($%{customdata[2]:,.0f})<br>"
+                "Ejec. fisica: %{customdata[3]:.0f}%  ·  financiera: %{y:.0f}%"
+                "<extra></extra>"
+            ),
+        ))
+        tickvals, ticktext = _currency_ticks(float(d["presupuesto"].max()))
+        shapes, ann = [], []
+        if nat_fin:
+            shapes.append({
+                "type": "line", "xref": "paper", "x0": 0, "x1": 1,
+                "y0": nat_fin, "y1": nat_fin,
+                "line": {"color": PALETTE["accent"], "width": 1, "dash": "dot"},
+            })
+            ann.append({
+                "xref": "paper", "x": 1, "y": nat_fin,
+                "xanchor": "right", "yanchor": "bottom",
+                "text": f"Promedio nacional {nat_fin:.0f}%", "showarrow": False,
+                "font": {"size": 10, "color": PALETTE["accent"]},
+            })
+        return _apply_theme(
+            fig, height=480, showlegend=False, shapes=shapes, annotations=ann,
+            xaxis={"tickmode": "array", "tickvals": tickvals, "ticktext": ticktext,
+                   "title": "Presupuesto asignado 2025-26", "zeroline": False,
+                   "gridcolor": PALETTE["border"]},
+            yaxis={"title": "Ejecucion financiera promedio (activos)", "ticksuffix": "%",
+                   "range": [0, 105], "zeroline": False, "gridcolor": PALETTE["border"]},
+            margin={"t": 30, "l": 20, "r": 30, "b": 50},
+        )
+    except Exception as e:
+        st.error(f"Error al crear scatter territorio: {e}")
+        return None
+
+
+def create_benchmark_chart(j, nat_fin):
+    """Diverging bar: each department's active-project financial execution
+    relative to the national average (green above, red below)."""
+    try:
+        d = j[j["n_activos"] > 0].copy()
+        if d.empty:
+            return None
+        d["delta"] = d["ejec_fin"].fillna(0) - nat_fin
+        d = d.sort_values("delta")
+        colors = [PALETTE["success"] if v >= 0 else PALETTE["danger"] for v in d["delta"]]
+        fig = go.Figure(go.Bar(
+            x=d["delta"], y=d["depto"], orientation="h",
+            marker={"color": colors, "line": {"width": 0}},
+            text=[f"{v:+.0f} pp" for v in d["delta"]],
+            textposition="outside", cliponaxis=False,
+            customdata=d[["ejec_fin"]].fillna(0).values,
+            hovertemplate=("<b>%{y}</b><br>Ejec. financiera: %{customdata[0]:.0f}%<br>"
+                           "Frente a nacional: %{x:+.1f} pp<extra></extra>"),
+        ))
+        amp = max(abs(d["delta"].min()), abs(d["delta"].max())) * 1.25 or 1
+        return _apply_theme(
+            fig, height=max(360, 24 * len(d) + 80), showlegend=False,
+            xaxis={"title": f"Puntos vs. promedio nacional ({nat_fin:.0f}%)",
+                   "range": [-amp, amp], "zeroline": True,
+                   "zerolinecolor": PALETTE["text_muted"], "gridcolor": PALETTE["border"]},
+            yaxis={"gridcolor": "rgba(0,0,0,0)", "automargin": True},
+            margin={"t": 20, "l": 20, "r": 50, "b": 40},
+        )
+    except Exception as e:
+        st.error(f"Error al crear benchmark: {e}")
+        return None
+
+
+def create_zombie_year_chart(zby):
+    """Bar of stalled (EN EJECUCIÓN) project count by BPIN formulation year."""
+    try:
+        if zby is None or zby.empty:
+            return None
+        fig = go.Figure(go.Bar(
+            x=zby["bpin_year"].astype(str), y=zby["n"],
+            marker={"color": PALETTE["danger"], "line": {"width": 0}},
+            text=[f"{int(n)}" for n in zby["n"]], textposition="outside",
+            cliponaxis=False,
+            customdata=zby[["valor"]].values,
+            hovertemplate=("<b>Vintage %{x}</b><br>%{y:,} proyectos aun en ejecucion<br>"
+                           "Valor: $%{customdata[0]:,.0f}<extra></extra>"),
+        ))
+        return _apply_theme(
+            fig, height=300, showlegend=False,
+            xaxis={"title": "Ano de formulacion (BPIN)", "gridcolor": "rgba(0,0,0,0)"},
+            yaxis={"title": "Proyectos", "gridcolor": PALETTE["border"],
+                   "range": [0, zby["n"].max() * 1.2]},
+            margin={"t": 20, "l": 20, "r": 20, "b": 40},
+        )
+    except Exception as e:
+        st.error(f"Error al crear chart de zombies: {e}")
+        return None
+
+
+def create_desaprobado_chart(dby):
+    """Horizontal bar: DESAPROBADO project value by department (top N)."""
+    try:
+        if dby is None or dby.empty:
+            return None
+        d = dby.sort_values("valor", ascending=True)
+        fig = go.Figure(go.Bar(
+            x=d["valor"], y=d["depto"], orientation="h",
+            marker={"color": PALETTE["neutral"], "line": {"width": 0}},
+            text=[format_currency(v) for v in d["valor"]],
+            textposition="outside", cliponaxis=False,
+            customdata=d[["n"]].values,
+            hovertemplate=("<b>%{y}</b><br>%{customdata[0]:,} proyectos desaprobados<br>"
+                           "Valor: $%{x:,.0f}<extra></extra>"),
+        ))
+        tickvals, ticktext = _currency_ticks(float(d["valor"].max()))
+        return _apply_theme(
+            fig, height=max(300, 32 * len(d) + 80), showlegend=False,
+            xaxis={"tickmode": "array", "tickvals": tickvals, "ticktext": ticktext,
+                   "gridcolor": PALETTE["border"], "zeroline": False,
+                   "range": [0, float(d["valor"].max()) * 1.2]},
+            yaxis={"gridcolor": "rgba(0,0,0,0)", "automargin": True},
+            margin={"t": 20, "l": 20, "r": 40, "b": 40},
+        )
+    except Exception as e:
+        st.error(f"Error al crear chart de desaprobados: {e}")
+        return None
